@@ -1,0 +1,23 @@
+# 抖音博主监控配置
+creators:
+  - name: "野山坡"
+    sec_uid: "MS4wLjABAAAAdu8I0mIDajXSXZZvtY79MXGRL83G5FvMlH1hxcIteExVv95ttHrPNDmQx8znQf0W"
+    platform: "douyin"
+    enabled: true
+
+# 调度配置
+schedule:
+  interval_minutes: 240        # 每 4 小时跑一轮
+  jitter_minutes: 15           # 随机延迟 ±15 分钟，避免被识别为机器人
+
+# 采集参数
+spider:
+  max_scrolls: 80              # 最大滚动次数
+  headless: true               # 无头模式
+  page_load_wait: 8            # 页面加载等待(秒)
+  scroll_idle_limit: 20        # 连续无新数据滚动次数上限
+
+# 输出配置
+output:
+  export_dir: "./exports"
+  auto_export_csv: true        # 每次运行后自动导出 CSV

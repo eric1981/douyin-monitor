@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>视频列表</h1>
+
+<div class="toolbar">
+    <form method="get">
+        <select name="creator_id">
+            <option value="">全部博主</option>
+            {% for c in creators %}
+            <option value="{{ c.id }}" {% if selected_creator==c.id|string %}selected{% endif %}>{{ c.name }}</option>
+            {% endfor %}
+        </select>
+        <input type="text" name="search" placeholder="搜索标题..." value="{{ search }}" style="width:200px">
+        <select name="sort">
+            <option value="likes" {% if sort=='likes' %}selected{% endif %}>按点赞</option>
+            <option value="comments" {% if sort=='comments' %}selected{% endif %}>按评论</option>
+            <option value="shares" {% if sort=='shares' %}selected{% endif %}>按分享</option>
+            <option value="time" {% if sort=='time' %}selected{% endif %}>按时间</option>
+        </select>
+        <button class="btn btn-secondary btn-sm">筛选</button>
+    </form>
+</div>
+
+<p style="color:var(--text-secondary); font-size:14px; margin-bottom:8px">共 {{ total }} 条视频</p>
+
+<div class="video-grid">
+{% for v in videos %}
+<div class="video-card">
+    <img src="{{ v.cover_url }}" alt="" loading="lazy" onerror="this.style.display='none'">
+    <div class="video-info">
+        <div class="video-title" title="{{ v.title }}">
+            {% if v.video_url %}
+            <a href="https://www.douyin.com/video/{{ v.vid }}" target="_blank" rel="noopener" class="video-link">{{ v.title[:60] }}</a>
+            {% else %}
+            {{ v.title[:60] }}
+            {% endif %}
+        </div>
+        <div class="video-meta">
+            <span title="点赞">👍 {{ v.like_count | int | format_number }}</span>
+            <span title="评论">💬 {{ v.comment_count | int | format_number }}</span>
+            <span title="分享">↗ {{ v.share_count | int | format_number }}</span>
+        </div>
+        <div class="video-tags">
+            {% for tag in v.hashtags_list[:3] %}
+            <span class="tag">#{{ tag }}</span>
+            {% endfor %}
+        </div>
+        <div class="video-time">{{ v.create_time_str }} · {{ v.duration_str }}</div>
+    </div>
+</div>
+{% endfor %}
+</div>
+
+{% if total_pages > 1 %}
+<div class="pagination">
+    {% for p in range(1, total_pages + 1) %}
+    <a href="?creator_id={{ selected_creator }}&search={{ search }}&sort={{ sort }}&page={{ p }}"
+       class="btn btn-outline btn-sm {% if p == page %}btn-active{% endif %}">{{ p }}</a>
+    {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

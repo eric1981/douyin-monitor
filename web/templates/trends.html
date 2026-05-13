@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block content %}
+<a href="/" class="back-link">← 返回概览</a>
+<h1>{{ creator.name }} · 点赞趋势</h1>
+
+<div class="trends-container">
+    <canvas id="trendChart"></canvas>
+</div>
+
+<script>
+(async () => {
+    const resp = await fetch('/api/trends/{{ creator.id }}');
+    const data = await resp.json();
+
+    const colors = ['#FF385C', '#222222', '#717171', '#00A699', '#FFB400'];
+    const datasets = data.datasets.map((ds, i) => ({
+        label: ds.label,
+        data: ds.data,
+        borderColor: colors[i % colors.length],
+        backgroundColor: colors[i % colors.length] + '10',
+        borderWidth: 2,
+        fill: false,
+        tension: 0.3,
+        pointRadius: 4,
+        pointHoverRadius: 6,
+    }));
+
+    new Chart(document.getElementById('trendChart'), {
+        type: 'line',
+        data: { labels: data.labels, datasets },
+        options: {
+            responsive: true,
+            interaction: { intersect: false, mode: 'index' },
+            plugins: {
+                title: { display: true, text: 'Top 5 视频点赞变化趋势', font: { size: 16, weight: '600' }, padding: 20 },
+                legend: { position: 'bottom', labels: { usePointStyle: true, padding: 20 } }
+            },
+            scales: {
+                y: { beginAtZero: false, grid: { color: '#EBEBEB' } },
+                x: { grid: { display: false } }
+            }
+        }
+    });
+})();
+</script>
+{% endblock %}

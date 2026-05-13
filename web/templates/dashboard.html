@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>监控概览</h1>
+
+<!-- ── 汇总看板 ── -->
+<div class="summary-grid" id="summary-grid">
+    <div class="summary-card">
+        <div class="summary-icon">👤</div>
+        <div class="summary-value" id="sum-creators">-</div>
+        <div class="summary-label">监控博主</div>
+    </div>
+    <div class="summary-card">
+        <div class="summary-icon">🎬</div>
+        <div class="summary-value" id="sum-videos">-</div>
+        <div class="summary-label">总视频数</div>
+    </div>
+    <div class="summary-card">
+        <div class="summary-icon">👍</div>
+        <div class="summary-value" id="sum-likes">-</div>
+        <div class="summary-label">总点赞数</div>
+    </div>
+</div>
+
+<div class="stats-grid">
+    {% for c in creators %}
+    <div class="stat-card">
+        <div class="stat-card-header">
+            {% if c.avatar_url %}
+            <img class="avatar" src="{{ c.avatar_url }}" alt="{{ c.nickname or c.name }}">
+            {% endif %}
+            <div>
+                <h3>{{ c.name }}</h3>
+                {% if c.nickname and c.nickname != c.name %}
+                <span class="nickname">@{{ c.nickname }}</span>
+                {% endif %}
+            </div>
+        </div>
+        {% if c.follower_count %}
+        <div class="stat-row"><span>粉丝</span><strong>{{ c.follower_count | int | format_number }}</strong></div>
+        {% endif %}
+        {% if c.following_count %}
+        <div class="stat-row"><span>关注</span><strong>{{ c.following_count | int | format_number }}</strong></div>
+        {% endif %}
+        {% if c.total_likes %}
+        <div class="stat-row"><span>获赞</span><strong>{{ c.total_likes | int | format_number }}</strong></div>
+        {% endif %}
+        {% if c.total_videos %}
+        <div class="stat-row"><span>视频数</span><strong>{{ c.total_videos }}</strong></div>
+        {% endif %}
+        {% if c.max_likes %}
+        <div class="stat-row"><span>最高点赞</span><strong>{{ c.max_likes | int | format_number }}</strong></div>
+        <div class="stat-row"><span>最高评论</span><strong>{{ c.max_comments | int | format_number }}</strong></div>
+        {% endif %}
+        {% if c.bio %}
+        <div class="stat-row bio-row"><span>简介</span><span class="bio-text">{{ c.bio }}</span></div>
+        {% endif %}
+        <div class="stat-row"><span>最后更新</span><strong>{{ c.last_fetched_at or '从未' }}</strong></div>
+        <a href="/trends/{{ c.id }}" class="btn btn-outline btn-sm">趋势图</a>
+        <a href="/videos?creator_id={{ c.id }}" class="btn btn-outline btn-sm">视频列表</a>
+    </div>
+    {% endfor %}
+</div>
+
+<div class="actions">
+    <button class="btn btn-primary" onclick="runFetch()">🔄 抓取全部</button>
+    <span class="fetch-status" id="fetch-status"></span>
+</div>
+
+<script>
+// 加载汇总数据
+(async function loadSummary() {
+    try {
+        const resp = await fetch('/api/stats');
+        const data = await resp.json();
+        document.getElementById('sum-creators').textContent = data.total_creators;
+        document.getElementById('sum-videos').textContent = data.total_videos;
+        const likes = data.total_likes || 0;
+        document.getElementById('sum-likes').textContent = likes >= 10000
+            ? (likes / 10000).toFixed(1) + '万'
+            : likes.toLocaleString();
+    } catch(e) { /* 静默降级 */ }
+})();
+
+async function runFetch() {
+    const el = document.getElementById('fetch-status');
+    el.textContent = '正在抓取...';
+    try {
+        const resp = await fetch('/api/run', { method: 'POST' });
+        const data = await resp.json();
+        el.textContent = `完成 — 共 ${data.total} 条视频入库`;
+        setTimeout(() => location.reload(), 1500);
+    } catch(e) {
+        el.textContent = '失败: ' + e;
+    }
+}
+</script>
+{% endblock %}
