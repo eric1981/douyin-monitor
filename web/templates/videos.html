@@ -29,11 +29,8 @@
     <img src="{{ v.cover_url }}" alt="" loading="lazy" onerror="this.style.display='none'">
     <div class="video-info">
         <div class="video-title" title="{{ v.title }}">
-            {% if v.video_url %}
-            <a href="https://www.douyin.com/video/{{ v.vid }}" target="_blank" rel="noopener" class="video-link">{{ v.title[:60] }}</a>
-            {% else %}
-            {{ v.title[:60] }}
-            {% endif %}
+            <a href="/video/{{ v.id }}" class="video-link">{{ v.title[:60] }}</a>
+            <a href="https://www.douyin.com/video/{{ v.vid }}" target="_blank" rel="noopener" class="video-ext-link" title="在抖音打开">🔗</a>
         </div>
         <div class="video-meta">
             <span title="点赞">👍 {{ v.like_count | int | format_number }}</span>
@@ -46,6 +43,13 @@
             {% endfor %}
         </div>
         <div class="video-time">{{ v.create_time_str }} · {{ v.duration_str }}</div>
+        {% if v.transcript %}
+        <div class="video-transcript" title="{{ v.transcript }}">
+            <span class="transcript-icon">📝</span><span class="transcript-text">{{ v.transcript[:80] }}{% if v.transcript|length > 80 %}...{% endif %}</span>
+        </div>
+        {% else %}
+        <button class="btn btn-outline btn-sm" onclick="transcribeOne({{ v.id }}, this)" style="margin-top:6px">🎙️ 获取文本</button>
+        {% endif %}
     </div>
 </div>
 {% endfor %}
@@ -59,4 +63,30 @@
     {% endfor %}
 </div>
 {% endif %}
+
+<script>
+async function transcribeOne(videoDbId, btn) {
+    btn.disabled = true;
+    btn.textContent = '⏳ 转录中...';
+    try {
+        const resp = await fetch('/api/transcribe/' + videoDbId, { method: 'POST' });
+        const data = await resp.json();
+        if (data.error) {
+            btn.textContent = '❌ 失败';
+            btn.title = data.error;
+        } else if (data.status === 'already_done') {
+            btn.textContent = '✅ 已转录';
+        } else {
+            btn.textContent = '📝 ' + (data.full_text || '').slice(0, 40) + '...';
+            btn.disabled = false;
+            btn.onclick = null;
+            btn.title = data.full_text || '';
+        }
+    } catch(e) {
+        btn.textContent = '❌ 失败';
+        btn.title = e.toString();
+    }
+    btn.disabled = false;
+}
+</script>
 {% endblock %}

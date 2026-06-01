@@ -1,0 +1,30 @@
+# 抖音博主监控配置 - 示例模板
+# 复制此文件为 config.yaml 并按需修改
+creators:
+  - name: "示例博主"
+    sec_uid: "你的_sec_uid_在这里"
+    platform: "douyin"
+    enabled: true
+
+# 调度配置
+schedule:
+  interval_minutes: 240        # 每 4 小时跑一轮
+  jitter_minutes: 15           # 随机延迟 ±15 分钟
+
+# 采集参数
+spider:
+  max_scrolls: 80
+  headless: true
+  page_load_wait: 8
+  scroll_idle_limit: 20
+
+# 转录配置
+transcriber:
+  model: "small"
+  device: "cpu"
+  cookie_import_path: ""
+
+# 输出配置
+output:
+  export_dir: "./exports"
+  auto_export_csv: true

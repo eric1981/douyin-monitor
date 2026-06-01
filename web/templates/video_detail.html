@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block content %}
+
+<a href="javascript:history.back()" class="back-link">← 返回</a>
+
+<div class="video-detail">
+    <div class="detail-header">
+        <img src="{{ v.cover_url }}" alt="" class="detail-cover" onerror="this.style.display='none'">
+        <div class="detail-meta">
+            <h1 class="detail-title">{{ v.title }}</h1>
+            <a href="https://www.douyin.com/video/{{ v.vid }}" target="_blank" rel="noopener" class="btn btn-outline btn-sm">🔗 打开抖音</a>
+            <div class="detail-stats">
+                <span class="stat">👍 {{ v.like_count | int | format_number }}</span>
+                <span class="stat">💬 {{ v.comment_count | int | format_number }}</span>
+                <span class="stat">↗ {{ v.share_count | int | format_number }}</span>
+            </div>
+            <div class="detail-info-row">
+                <span>{{ v.creator_name }}</span> <span>·</span>
+                <span>{{ v.create_time_str }}</span> <span>·</span>
+                <span>{{ v.duration_str }}</span>
+            </div>
+            {% if v.hashtags_list %}
+            <div class="detail-tags">
+                {% for tag in v.hashtags_list %}<span class="tag">#{{ tag }}</span>{% endfor %}
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    {% if transcript %}
+    <div class="detail-transcript">
+        <h2>📝 视频文案（语音识别）</h2>
+        <div class="transcript-full">{{ transcript.full_text }}</div>
+        {% if transcript.segments %}
+        <details class="transcript-segments">
+            <summary>📋 逐段时间轴（{{ transcript.segments | length }} 段）</summary>
+            <div class="segment-list">
+            {% for seg in transcript.segments %}
+            <div class="segment-row">
+                <span class="seg-time">{{ "%.1f" | format(seg.start) }}s</span>
+                <span class="seg-text">{{ seg.text }}</span>
+            </div>
+            {% endfor %}
+            </div>
+        </details>
+        {% endif %}
+    </div>
+    {% else %}
+    <div class="empty-state">
+        <p>📭 暂无语音转录</p>
+        <p style="margin-bottom:8px">
+            <label style="font-size:13px;color:var(--text-secondary)">
+                Whisper 模型:
+                <select id="whisper-model" onchange="changeModel()" style="padding:4px 8px;font-size:13px;margin-left:4px">
+                    <option value="tiny">tiny</option>
+                    <option value="base">base</option>
+                    <option value="small" selected>small</option>
+                    <option value="medium">medium</option>
+                    <option value="large-v3">large-v3</option>
+                </select>
+            </label>
+        </p>
+        <button class="btn btn-primary" id="transcribe-btn" onclick="transcribeThis({{ v.id }})">🎙️ 获取文本</button>
+        <span id="transcribe-status" style="margin-left:8px;font-size:14px;color:var(--text-secondary)"></span>
+    </div>
+    {% endif %}
+</div>
+
+<script>
+// 加载当前模型配置
+(async function loadModel() {
+    try {
+        const resp = await fetch('/api/transcriber-config');
+        const cfg = await resp.json();
+        document.getElementById('whisper-model').value = cfg.model || 'small';
+    } catch(e) {}
+})();
+
+async function changeModel() {
+    const sel = document.getElementById('whisper-model');
+    const status = document.getElementById('transcribe-status');
+    status.textContent = '保存中...';
+    try {
+        await fetch('/api/transcriber-config', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model: sel.value })
+        });
+        status.textContent = `模型已切换为 ${sel.value}`;
+        setTimeout(() => { status.textContent = ''; }, 3000);
+    } catch(e) {
+        status.textContent = '保存失败: ' + e;
+    }
+}
+
+async function transcribeThis(videoDbId) {
+    const btn = document.getElementById('transcribe-btn');
+    const status = document.getElementById('transcribe-status');
+    btn.disabled = true;
+    status.textContent = '⏳ 正在转录，请耐心等待...';
+    try {
+        const resp = await fetch('/api/transcribe/' + videoDbId, { method: 'POST' });
+        const data = await resp.json();
+        if (data.error) {
+            status.textContent = '❌ ' + data.error;
+            btn.disabled = false;
+        } else {
+            status.textContent = '✅ 转录完成，刷新页面查看';
+            btn.style.display = 'none';
+        }
+    } catch(e) {
+        status.textContent = '❌ ' + e;
+        btn.disabled = false;
+    }
+}
+</script>
+{% endblock %}

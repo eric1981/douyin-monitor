@@ -61,6 +61,15 @@ def init_db():
             fetched_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
+        CREATE TABLE IF NOT EXISTS transcripts (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            video_id    INTEGER NOT NULL UNIQUE REFERENCES videos(id),
+            full_text   TEXT,
+            segments    TEXT DEFAULT '[]',
+            language    TEXT DEFAULT 'zh',
+            created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
         CREATE INDEX IF NOT EXISTS idx_snapshots_video_time
             ON snapshots(video_id, fetched_at);
 
@@ -246,3 +255,76 @@ def get_stats(creator_id: int) -> dict:
             WHERE c.id = ?
         """, (creator_id,)).fetchone()
         return dict(row) if row else {}
+
+
+def get_today_videos(limit: int = 20) -> list[dict]:
+    """获取今日首次发现的视频（按点赞排序）"""
+    from datetime import date
+    today = date.today().isoformat()
+    with get_db() as db:
+        rows = db.execute("""
+            SELECT v.id, v.video_id as vid, v.title, v.cover_url,
+                   v.create_time, v.duration_ms,
+                   s.like_count, s.comment_count, s.share_count,
+                   c.name as creator_name, c.id as cid
+            FROM videos v
+            JOIN snapshots s ON s.video_id = v.id
+            JOIN creators c ON c.id = v.creator_id
+            WHERE date(v.first_seen_at) = ?
+              AND s.id = (
+                  SELECT id FROM snapshots WHERE video_id = v.id ORDER BY id DESC LIMIT 1
+              )
+            ORDER BY s.like_count DESC
+            LIMIT ?
+        """, (today, limit)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_today_summary() -> dict:
+    """获取今日汇总：新增视频数、新增点赞、新增评论"""
+    from datetime import date
+    today = date.today().isoformat()
+    with get_db() as db:
+        row = db.execute("""
+            SELECT
+                COUNT(DISTINCT v.id) as today_videos,
+                COALESCE(SUM(s.like_count), 0) as today_likes,
+                COALESCE(SUM(s.comment_count), 0) as today_comments
+            FROM videos v
+            JOIN snapshots s ON s.video_id = v.id
+            WHERE date(v.first_seen_at) = ?
+              AND s.id = (
+                  SELECT id FROM snapshots WHERE video_id = v.id ORDER BY id DESC LIMIT 1
+              )
+        """, (today,)).fetchone()
+        return dict(row) if row else {}
+
+
+# ─── Transcript ─────────────────────────────────────────────
+
+def save_transcript(video_db_id: int, full_text: str, segments: list[dict]) -> int:
+    """保存转录结果，返回 transcript id"""
+    with get_db() as db:
+        db.execute("""
+            INSERT OR REPLACE INTO transcripts (video_id, full_text, segments)
+            VALUES (?, ?, ?)
+        """, (video_db_id, full_text, json.dumps(segments, ensure_ascii=False)))
+        db.commit()
+        row = db.execute(
+            "SELECT id FROM transcripts WHERE video_id = ?", (video_db_id,)
+        ).fetchone()
+        return row["id"] if row else 0
+
+
+def get_transcript(video_db_id: int) -> dict | None:
+    """获取视频的转录文本"""
+    with get_db() as db:
+        row = db.execute(
+            "SELECT full_text, segments, language, created_at FROM transcripts WHERE video_id = ?",
+            (video_db_id,)
+        ).fetchone()
+        if row:
+            d = dict(row)
+            d["segments"] = json.loads(d["segments"]) if d["segments"] else []
+            return d
+        return None

@@ -41,6 +41,13 @@ class Video:
     hashtags: list[str]
     fetched_at: str
 
+    @property
+    def public_url(self) -> str:
+        """抖音公开播放链接 https://www.douyin.com/video/{video_id}"""
+        if self.video_id:
+            return f"https://www.douyin.com/video/{self.video_id}"
+        return ""
+
     def to_dict(self) -> dict:
         return asdict(self)
 

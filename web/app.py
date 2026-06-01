@@ -14,10 +14,12 @@ import uvicorn
 import asyncio
 import concurrent.futures
 import json
+import yaml
 
 from db import (
     init_db, add_creator, remove_creator, rename_creator, list_creators, get_creator,
     upsert_video, add_snapshot, update_last_fetched, update_creator_profile, get_stats, get_db,
+    get_today_videos, get_today_summary,
 )
 from spider import DouyinSpider
 from utils import resolve_secuid, async_resolve_secuid
@@ -55,7 +57,27 @@ async def dashboard(request: Request):
         c["total_videos"] = s.get("total_videos", 0)
         c["max_likes"] = s.get("max_likes", 0)
         c["max_comments"] = s.get("max_comments", 0)
-    return render("dashboard.html", creators=creators)
+
+    today_summary = get_today_summary()
+    today_videos = get_today_videos(limit=20)
+    for v in today_videos:
+        v["create_time_str"] = _fmt_time(v["create_time"])
+        v["duration_str"] = _fmt_duration(v["duration_ms"])
+    # 批量获取今日视频的转录文本
+    if today_videos:
+        from db import get_db
+        with get_db() as db:
+            for v in today_videos:
+                t = db.execute(
+                    "SELECT full_text FROM transcripts WHERE video_id = ?",
+                    (v["id"],)
+                ).fetchone()
+                v["transcript"] = t["full_text"] if t else ""
+
+    return render("dashboard.html",
+                  creators=creators,
+                  today_summary=today_summary,
+                  today_videos=today_videos)
 
 
 @app.get("/creators", response_class=HTMLResponse)
@@ -96,9 +118,11 @@ async def videos_page(request: Request, creator_id: int = Query(None),
             SELECT v.id, v.video_id as vid, v.title, v.cover_url, v.duration_ms,
                    v.create_time, v.hashtags, v.first_seen_at,
                    s.like_count, s.comment_count, s.share_count, s.view_count, s.fetched_at,
+                   t.full_text as transcript,
                    c.name as creator_name, c.id as cid
             FROM videos v JOIN snapshots s ON s.video_id = v.id
             JOIN creators c ON c.id = v.creator_id
+            LEFT JOIN transcripts t ON t.video_id = v.id
             WHERE {where_clause} AND s.id = (
                 SELECT id FROM snapshots WHERE video_id=v.id ORDER BY id DESC LIMIT 1
             )
@@ -123,6 +147,31 @@ async def videos_page(request: Request, creator_id: int = Query(None),
                   selected_creator=str(creator_id or ""))
 
 
+@app.get("/video/{video_db_id}", response_class=HTMLResponse)
+async def video_detail(request: Request, video_db_id: int):
+    from db import get_db, get_transcript
+    with get_db() as db:
+        row = db.execute("""
+            SELECT v.id, v.video_id as vid, v.title, v.cover_url,
+                   v.duration_ms, v.create_time, v.hashtags,
+                   s.like_count, s.comment_count, s.share_count,
+                   c.name as creator_name, c.id as cid
+            FROM videos v
+            JOIN snapshots s ON s.video_id = v.id
+            JOIN creators c ON c.id = v.creator_id
+            WHERE v.id = ?
+              AND s.id = (
+                  SELECT id FROM snapshots WHERE video_id=v.id ORDER BY id DESC LIMIT 1
+              )
+        """, (video_db_id,)).fetchone()
+        if not row:
+            return HTMLResponse("视频不存在", status_code=404)
+    v = dict(row)
+    v["create_time_str"] = _fmt_time(v["create_time"])
+    v["duration_str"] = _fmt_duration(v["duration_ms"])
+    v["hashtags_list"] = json.loads(v["hashtags"]) if v["hashtags"] else []
+    transcript = get_transcript(video_db_id)
+    return render("video_detail.html", v=v, transcript=transcript)
 @app.get("/trends/{creator_id}", response_class=HTMLResponse)
 async def trends_page(request: Request, creator_id: int):
     creator = get_creator(str(creator_id))
@@ -204,6 +253,34 @@ async def api_run_fetch(creator_id: int = None):
                 if profile:
                     update_creator_profile(c["id"], profile)
                 update_last_fetched(c["id"])
+
+            # 自动转录新视频（抓取完成后，复用线程池）
+            try:
+                from transcriber import WHISPER_AVAILABLE
+                if WHISPER_AVAILABLE:
+                    with get_db() as db:
+                        rows = db.execute("""
+                            SELECT v.video_id, v.id FROM videos v
+                            LEFT JOIN transcripts t ON t.video_id = v.id
+                            WHERE t.id IS NULL ORDER BY v.id DESC LIMIT 20
+                        """).fetchall()
+                    if rows:
+                        def _transcribe_new():
+                            from transcriber import VideoFetcher, process_video
+                            count = 0
+                            with VideoFetcher() as fetcher:
+                                for r in rows:
+                                    try:
+                                        if process_video(fetcher, r["video_id"], r["id"]):
+                                            count += 1
+                                    except Exception as e:
+                                        logger.error("转录失败 %s: %s", r["video_id"], e)
+                            return count
+                        n = await asyncio.get_running_loop().run_in_executor(pool, _transcribe_new)
+                        logger.info("自动转录: %d 条", n)
+            except ImportError:
+                pass
+
         logger.info("抓取完成: %d 条视频入库", total)
         return {"message": "抓取完成", "total": total}
     except Exception as e:
@@ -240,6 +317,148 @@ async def api_trends(creator_id: int):
             datasets.append({"label": (tv["title"] or "")[:20], "data": points})
 
     return {"labels": times, "datasets": datasets}
+
+
+@app.get("/api/transcript/{video_db_id}")
+async def api_transcript(video_db_id: int):
+    """获取视频完整转录文本"""
+    from db import get_transcript
+    t = get_transcript(video_db_id)
+    if not t:
+        return JSONResponse({"error": "未转录"}, 404)
+    return t
+
+
+@app.post("/api/transcribe/{video_db_id}")
+async def api_transcribe_video(video_db_id: int):
+    """触发单个视频语音转录"""
+    from db import get_transcript
+
+    # 检查视频是否存在
+    with get_db() as db:
+        row = db.execute(
+            "SELECT v.id, v.video_id, c.name FROM videos v JOIN creators c ON c.id=v.creator_id WHERE v.id=?",
+            (video_db_id,)
+        ).fetchone()
+        if not row:
+            return JSONResponse({"error": "视频不存在"}, 404)
+
+    # 已转录则直接返回
+    existing = get_transcript(video_db_id)
+    if existing:
+        return {"status": "already_done", "full_text": existing.get("full_text", "")}
+
+    video_id = row["video_id"]
+
+    def _do_transcribe():
+        from transcriber import VideoFetcher, process_video
+        with VideoFetcher() as fetcher:
+            return process_video(fetcher, video_id, video_db_id)
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            result = await asyncio.get_running_loop().run_in_executor(pool, _do_transcribe)
+        if result:
+            return {"status": "ok", "full_text": result.get("full_text", "")}
+        else:
+            return {"status": "skipped", "message": "已转录或下载失败"}
+    except Exception as e:
+        logger.exception("转录失败 video_db_id=%d", video_db_id)
+        return JSONResponse({"error": f"转录失败: {e}"}, 500)
+
+
+@app.post("/api/transcribe-all")
+async def api_transcribe_all():
+    """批量转录所有未转录视频"""
+
+    with get_db() as db:
+        rows = db.execute("""
+            SELECT v.id, v.video_id FROM videos v
+            LEFT JOIN transcripts t ON t.video_id = v.id
+            WHERE t.id IS NULL
+            ORDER BY v.id DESC
+        """).fetchall()
+
+    if not rows:
+        return {"status": "ok", "total": 0, "message": "所有视频已转录"}
+
+    video_list = [(r["id"], r["video_id"]) for r in rows]
+
+    def _do_transcribe_all():
+        from transcriber import VideoFetcher, process_video
+        results = []
+        with VideoFetcher() as fetcher:
+            for db_id, vid in video_list:
+                try:
+                    r = process_video(fetcher, vid, db_id)
+                    results.append({"video_db_id": db_id, "status": "ok" if r else "skipped"})
+                except Exception as e:
+                    results.append({"video_db_id": db_id, "status": "error", "error": str(e)})
+        return results
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            results = await asyncio.get_running_loop().run_in_executor(pool, _do_transcribe_all)
+        ok = sum(1 for r in results if r["status"] == "ok")
+        err = sum(1 for r in results if r["status"] == "error")
+        skipped = sum(1 for r in results if r["status"] == "skipped")
+        return {"status": "ok", "total": len(results), "ok": ok, "error": err, "skipped": skipped}
+    except Exception as e:
+        logger.exception("批量转录失败")
+        return JSONResponse({"error": f"批量转录失败: {e}"}, 500)
+
+
+@app.get("/api/transcriber-config")
+async def api_get_transcriber_config():
+    """读取转录配置（模型、设备）"""
+    config_path = BASE_DIR.parent / "config.yaml"
+    try:
+        if config_path.exists():
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            tc = cfg.get("transcriber", {})
+            return {
+                "model": tc.get("model", "small"),
+                "device": tc.get("device", "cpu"),
+            }
+    except Exception:
+        pass
+    return {"model": "small", "device": "cpu"}
+
+
+@app.put("/api/transcriber-config")
+async def api_update_transcriber_config(
+    model: str = Body(None),
+    device: str = Body(None),
+):
+    """更新转录配置并写回 config.yaml"""
+    config_path = BASE_DIR.parent / "config.yaml"
+    if not config_path.exists():
+        return JSONResponse({"error": "config.yaml 不存在"}, 500)
+
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+    except Exception:
+        return JSONResponse({"error": "读取 config.yaml 失败"}, 500)
+
+    tc = cfg.setdefault("transcriber", {})
+    updated = {}
+    if model is not None:
+        tc["model"] = model
+        updated["model"] = model
+    if device is not None:
+        tc["device"] = device
+        updated["device"] = device
+
+    try:
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+    except Exception as e:
+        return JSONResponse({"error": f"写入 config.yaml 失败: {e}"}, 500)
+
+    logger.info("转录配置已更新: %s", updated)
+    return {"status": "ok", "updated": updated}
 
 
 @app.get("/api/stats")

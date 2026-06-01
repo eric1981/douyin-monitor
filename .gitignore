@@ -4,7 +4,10 @@ __pycache__/
 *.pyo
 
 # Playwright 浏览器会话（含 Cookie，切勿提交）
+douyin_session_1/
+douyin_session_2/
 douyin_session/
+$null
 
 # SQLite 数据库文件
 data/
@@ -21,3 +24,6 @@ exports/
 
 # 环境变量
 .env
+
+# 配置文件（含博主 UID 等隐私，推示例模板）
+config.yaml

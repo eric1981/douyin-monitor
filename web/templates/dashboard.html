@@ -2,6 +2,23 @@
 {% block content %}
 <h1>监控概览</h1>
 
+<!-- ── 抓取按钮（顶部）── -->
+<div class="actions-top">
+    <button class="btn btn-primary" onclick="runFetch()">🔄 抓取全部</button>
+    <button class="btn btn-secondary" onclick="transcribeAll()">📝 获取全部文本</button>
+    <label style="margin-left:12px;font-size:13px;color:var(--text-secondary)">
+        Whisper:
+        <select id="whisper-model" onchange="changeModel()" style="padding:4px 8px;font-size:13px;margin-left:4px">
+            <option value="tiny">tiny</option>
+            <option value="base">base</option>
+            <option value="small" selected>small</option>
+            <option value="medium">medium</option>
+            <option value="large-v3">large-v3</option>
+        </select>
+    </label>
+    <span class="fetch-status" id="fetch-status"></span>
+</div>
+
 <!-- ── 汇总看板 ── -->
 <div class="summary-grid" id="summary-grid">
     <div class="summary-card">
@@ -19,8 +36,56 @@
         <div class="summary-value" id="sum-likes">-</div>
         <div class="summary-label">总点赞数</div>
     </div>
+    <div class="summary-card summary-card-today">
+        <div class="summary-icon">🆕</div>
+        <div class="summary-value">{{ today_summary.today_videos | default(0) | int }}</div>
+        <div class="summary-label">今日新增视频</div>
+    </div>
+    <div class="summary-card summary-card-today">
+        <div class="summary-icon">🔥</div>
+        <div class="summary-value">{{ today_summary.today_likes | default(0) | int | format_number }}</div>
+        <div class="summary-label">今日新增点赞</div>
+    </div>
+    <div class="summary-card summary-card-today">
+        <div class="summary-icon">💬</div>
+        <div class="summary-value">{{ today_summary.today_comments | default(0) | int | format_number }}</div>
+        <div class="summary-label">今日新增评论</div>
+    </div>
 </div>
 
+<!-- ── 今日视频 ── -->
+{% if today_videos %}
+<div class="today-section">
+    <h2>📅 今日视频 <span class="today-count">{{ today_videos | length }} 条</span></h2>
+    <div class="video-grid">
+    {% for v in today_videos %}
+    <div class="video-card">
+        <img src="{{ v.cover_url }}" alt="" loading="lazy" onerror="this.style.display='none'">
+        <div class="video-info">
+            <div class="video-title" title="{{ v.title }}">
+                <a href="/video/{{ v.id }}" class="video-link">{{ v.title[:60] }}</a>
+                <a href="https://www.douyin.com/video/{{ v.vid }}" target="_blank" rel="noopener" class="video-ext-link" title="在抖音打开">🔗</a>
+            </div>
+            <div class="video-meta">
+                <span title="点赞">👍 {{ v.like_count | int | format_number }}</span>
+                <span title="评论">💬 {{ v.comment_count | int | format_number }}</span>
+                <span title="分享">↗ {{ v.share_count | int | format_number }}</span>
+            </div>
+            <div class="video-time">{{ v.create_time_str }} · {{ v.duration_str }}</div>
+            <div class="video-creator-name">{{ v.creator_name }}</div>
+            {% if v.transcript %}
+            <div class="video-transcript" title="{{ v.transcript }}">
+                <span class="transcript-icon">📝</span><span class="transcript-text">{{ v.transcript[:120] }}{% if v.transcript|length > 120 %}...{% endif %}</span>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+    {% endfor %}
+    </div>
+</div>
+{% endif %}
+
+<!-- ── 博主卡片 ── -->
 <div class="stats-grid">
     {% for c in creators %}
     <div class="stat-card">
@@ -61,11 +126,6 @@
     {% endfor %}
 </div>
 
-<div class="actions">
-    <button class="btn btn-primary" onclick="runFetch()">🔄 抓取全部</button>
-    <span class="fetch-status" id="fetch-status"></span>
-</div>
-
 <script>
 // 加载汇总数据
 (async function loadSummary() {
@@ -87,10 +147,55 @@ async function runFetch() {
     try {
         const resp = await fetch('/api/run', { method: 'POST' });
         const data = await resp.json();
-        el.textContent = `完成 — 共 ${data.total} 条视频入库`;
+        el.textContent = '完成 — 共 ' + data.total + ' 条视频入库';
         setTimeout(() => location.reload(), 1500);
     } catch(e) {
         el.textContent = '失败: ' + e;
+    }
+}
+
+async function transcribeAll() {
+    const el = document.getElementById('fetch-status');
+    el.textContent = '正在转录，请耐心等待...';
+    try {
+        const resp = await fetch('/api/transcribe-all', { method: 'POST' });
+        const data = await resp.json();
+        if (data.error) {
+            el.textContent = '失败: ' + data.error;
+        } else {
+            el.textContent = '完成 — ' + data.ok + ' 条转录成功'
+                + (data.error ? ', ' + data.error + ' 条失败' : '')
+                + (data.skipped ? ', ' + data.skipped + ' 条跳过' : '');
+        }
+        setTimeout(() => location.reload(), 2000);
+    } catch(e) {
+        el.textContent = '失败: ' + e;
+    }
+}
+
+// 加载当前模型配置
+(async function loadModel() {
+    try {
+        const resp = await fetch('/api/transcriber-config');
+        const cfg = await resp.json();
+        document.getElementById('whisper-model').value = cfg.model || 'small';
+    } catch(e) {}
+})();
+
+async function changeModel() {
+    const sel = document.getElementById('whisper-model');
+    const el = document.getElementById('fetch-status');
+    el.textContent = '保存中...';
+    try {
+        await fetch('/api/transcriber-config', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model: sel.value })
+        });
+        el.textContent = `模型已切换为 ${sel.value}，下次转录生效`;
+        setTimeout(() => { el.textContent = ''; }, 3000);
+    } catch(e) {
+        el.textContent = '保存失败: ' + e;
     }
 }
 </script>

@@ -9,12 +9,16 @@
   python monitor.py report [--creator <id>]                  查看报告
   python monitor.py schedule                                 启动定时调度
   python monitor.py login                                    扫码登录
+  python monitor.py login --slot 1                           登录到多会话槽位
+  python monitor.py export-cookies                           从已登录的 Chrome 导出 cookies（需先关闭 Chrome）
+  python monitor.py transcribe [--creator <id>] [--limit N] [--workers 2] 转录视频语音
   python monitor.py export [--creator <id>]                  导出 CSV
   python monitor.py web [--port <port>]                      启动 Web 面板
 """
 
 import asyncio
 import csv
+import concurrent.futures
 import json
 import logging
 import random
@@ -178,6 +182,26 @@ async def cmd_run(args: list[str]):
 
     logger.info("共 %d 条视频入库", total_videos)
 
+    # 自动转录新视频
+    try:
+        from transcriber import WHISPER_AVAILABLE, process_video, VideoFetcher
+        if WHISPER_AVAILABLE:
+          with VideoFetcher() as f:
+            from db import get_db
+            with get_db() as db:
+                new_rows = db.execute("""
+                    SELECT v.video_id, v.id FROM videos v
+                    LEFT JOIN transcripts t ON t.video_id = v.id
+                    WHERE t.id IS NULL ORDER BY v.id DESC LIMIT 20
+                """).fetchall()
+            for row in new_rows:
+                try:
+                    process_video(f, row["video_id"], row["id"])
+                except Exception as e:
+                    logger.error("转录失败 %s: %s", row["video_id"], e)
+    except ImportError:
+        pass
+
     # 自动导出
     if config.get("output", {}).get("auto_export_csv"):
         export_csv(None)
@@ -327,13 +351,23 @@ async def cmd_schedule():
 # ─── 命令：login ──────────────────────────────────────────────
 
 async def cmd_login():
-    """打开有头浏览器手动扫码登录"""
-    logger.info("打开浏览器，请扫码...")
-    from spider import SESSION_DIR
-    SESSION_DIR.mkdir(parents=True, exist_ok=True)
+    """打开有头浏览器手动扫码登录，--slot N 保存到独立会话目录"""
+    args = sys.argv[2:] if len(sys.argv) > 2 else []
+    slot = None
+    if "--slot" in args:
+        idx = args.index("--slot")
+        if idx + 1 < len(args):
+            slot = args[idx + 1]
+
+    from pathlib import Path as _Path
+    session_dir = _Path(__file__).parent / "douyin_session"
+    if slot:
+        session_dir = _Path(__file__).parent / f"douyin_session_{slot}"
+    logger.info("打开浏览器（会话: %s），请扫码...", session_dir.name)
+    session_dir.mkdir(parents=True, exist_ok=True)
     context = await async_playwright().start()
     ctx = await context.chromium.launch_persistent_context(
-        user_data_dir=str(SESSION_DIR),
+        user_data_dir=str(session_dir),
         headless=False,
         viewport={"width": 1920, "height": 1080},
         locale="zh-CN",
@@ -342,8 +376,14 @@ async def cmd_login():
     await page.goto("https://www.douyin.com/", wait_until="domcontentloaded")
     logger.info("请在浏览器中完成登录，然后按 Enter...")
     input()
-    await ctx.close()
-    await context.stop()
+    try:
+        await ctx.close()
+    except Exception:
+        pass
+    try:
+        await context.stop()
+    except Exception:
+        pass
     logger.info("会话已保存")
 
 
@@ -359,6 +399,126 @@ def cmd_web(args: list[str]):
     import uvicorn
     logger.info("启动面板 → http://127.0.0.1:%d", port)
     uvicorn.run("web.app:app", host="127.0.0.1", port=port, reload=True)
+
+
+# ─── 命令：transcribe ──────────────────────────────────────────
+
+def cmd_transcribe(args: list[str]):
+    """转录视频语音为文本"""
+    import random as _random, time as _time
+    target = None
+    limit = None
+    workers = None  # None → 自动匹配会话数
+    i = 0
+    while i < len(args):
+        if args[i] == "--creator" and i + 1 < len(args):
+            target = args[i + 1]
+            i += 2
+        elif args[i] == "--limit" and i + 1 < len(args):
+            limit = int(args[i + 1])
+            i += 2
+        elif args[i] == "--workers" and i + 1 < len(args):
+            workers = int(args[i + 1])
+            i += 2
+        else:
+            i += 1
+
+    init_db()
+    from transcriber import process_video, VideoFetcher
+    from db import get_db
+
+    if target:
+        creator = get_creator(target)
+        if not creator:
+            logger.error("未找到博主: %s", target)
+            return
+        creator_ids = [creator["id"]]
+    else:
+        creator_ids = [c["id"] for c in list_creators() if c["enabled"]]
+
+    total_pending = 0
+    for cid in creator_ids:
+        with get_db() as db:
+            n = db.execute("""
+                SELECT COUNT(*) as c FROM videos v
+                LEFT JOIN transcripts t ON t.video_id = v.id
+                WHERE v.creator_id = ? AND t.id IS NULL
+            """, (cid,)).fetchone()["c"]
+            total_pending += n
+    logger.info("待转录: %d 条", total_pending)
+
+    all_rows = []
+    for cid in creator_ids:
+        with get_db() as db:
+            rows = db.execute("""
+              SELECT v.id, v.video_id, v.title
+              FROM videos v
+              LEFT JOIN transcripts t ON t.video_id = v.id
+              WHERE v.creator_id = ? AND t.id IS NULL""" +
+              (" ORDER BY v.id DESC LIMIT ?" if limit else " ORDER BY v.id DESC"),
+              (cid,) + ((limit,) if limit else ())
+            ).fetchall()
+            all_rows.extend([dict(r) for r in rows])
+
+    if not all_rows:
+        logger.info("没有待转录视频")
+        return
+
+    from transcriber import get_whisper
+    get_whisper()
+
+    from pathlib import Path as _Path
+    _base = _Path(__file__).parent
+    _sessions = sorted(_base.glob("douyin_session*"))
+    _sessions = [d for d in _sessions if d.is_dir() and (
+        (d / "Default" / "Network" / "Cookies").exists() or (d / "Default" / "Cookies").exists()
+    )]
+    if not _sessions:
+        _base_dir = _base / "douyin_session"
+        _sessions = [_base_dir]
+    logger.info("会话: %d 个 (%s)", len(_sessions), ", ".join(d.name for d in _sessions))
+
+    if workers is None:
+        workers = len(_sessions)
+    # 每个会话只能一个 worker（Chromium 锁 Profile DB）
+    workers = max(1, min(workers, len(_sessions), 4))
+
+    import threading
+    done_lock = threading.Lock()
+
+    def worker(task):
+        rows_slice, session_dir = task
+        with VideoFetcher(session_dir=session_dir) as fetcher:
+            for row in rows_slice:
+                with get_db() as db:
+                    if db.execute("SELECT id FROM transcripts WHERE video_id=?",
+                                  (row["id"],)).fetchone():
+                        with done_lock:
+                            done_count[0] += 1
+                        continue
+                    # 随机停顿 3-5 秒
+                    _time.sleep(_random.uniform(3, 5))
+                try:
+                    process_video(fetcher, row["video_id"], row["id"])
+                except Exception as e:
+                    logger.error("转录失败 %s: %s", row["video_id"], e)
+                with done_lock:
+                    done_count[0] += 1
+                logger.info("[%d/%d] %s", done_count[0], total_pending, row["title"][:40])
+
+    import itertools
+    # 每个会话分配一个 worker，任务均匀分片
+    chunk_size = max(1, len(all_rows) // workers)
+    done_count = [0]
+    _tasks = []
+    for i in range(workers):
+        chunk = all_rows[i * chunk_size : (i + 1) * chunk_size] if i < workers - 1 else all_rows[i * chunk_size:]
+        _tasks.append((chunk, _sessions[i]))
+    logger.info("启动 %d worker（各占 1 会话）", workers)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        list(pool.map(worker, _tasks))
+
+    logger.info("转录完成: %d/%d 条", done_count[0], total_pending)
 
 
 # ─── 入口 ──────────────────────────────────────────────────────
@@ -403,8 +563,14 @@ def main():
             logger.info("调度已停止")
     elif cmd == "login":
         _run_async(cmd_login())
+    elif cmd == "export-cookies":
+        from transcriber import _ensure_cookies
+        _ensure_cookies()
+        logger.info("cookies 已导入，可以使用 transcribe 命令了")
     elif cmd == "web":
         cmd_web(args)
+    elif cmd == "transcribe":
+        cmd_transcribe(args)
     else:
         logger.error("未知命令: %s", cmd)
         print(__doc__)
