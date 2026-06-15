@@ -7,6 +7,7 @@
 - **博主管理** — 添加/删除/重命名监控目标，支持多种输入格式
 - **数据采集** — Playwright 无头浏览器模拟滚动，拦截 API 响应收集完整视频列表
 - **趋势追踪** — 每次抓取生成独立快照，对比历史数据发现涨粉/爆款
+- **语音转录** — faster-whisper 离线转写视频语音为文字（简体中文）
 - **Web 面板** — FastAPI + Jinja2 页面，概览仪表盘、视频列表、趋势图 (Chart.js)
 - **CLI 工具** — 命令行增删查改、单次抓取、定时调度、CSV 导出
 - **多格式输入** — 支持纯 sec_uid、主页链接、短链接 (v.douyin.com)、分享文案
@@ -17,6 +18,7 @@
 |---|------|
 | 数据采集 | Python 3.8+、Playwright (Chromium)、asyncio |
 | 数据存储 | SQLite (WAL 模式, 外键) |
+| 语音转录 | faster-whisper (large-v3-turbo)、ffmpeg、zhconv |
 | Web 后端 | FastAPI、Jinja2、Uvicorn |
 | Web 前端 | 原生 HTML/CSS/JS、Chart.js 4.x (CDN) |
 | 配置 | YAML |
@@ -25,15 +27,18 @@
 
 ```
 douyin-monitor/
-├── monitor.py            # CLI 入口（添加/删除/抓取/报告/导出/调度）
-├── spider.py             # 抖音数据采集模块 (Playwright)
+├── monitor.py            # CLI 入口（路由到 commands.py）
+├── commands.py           # 命令实现（add/remove/list/run/report/export 等）
+├── spider.py             # 抖音数据采集模块 (Playwright 滚动+API拦截)
 ├── douyin_spider.py      # 独立抓取脚本（可单独运行，导出 JSON）
-├── db.py                 # SQLite 数据层（CRUD、快照、统计）
+├── db.py                 # SQLite 数据层（CRUD、快照、统计、批量查询）
 ├── utils.py              # URL 解析工具（sec_uid 提取、短链接重定向）
+├── transcriber.py        # 语音转录模块（视频下载→音频提取→Whisper 转文本）
 ├── check_data.py         # JSON 数据完整性检查工具
-├── test_web.py           # Web API 冒烟测试
+├── test_web.py           # Web API 冒烟测试 (pytest)
 ├── config.yaml           # 配置文件（博主列表、调度参数）
 ├── requirements.txt      # Python 依赖
+├── SKILL_CODE_AUDIT.md   # 代码审计工作流 Skill 文档
 ├── data/                 # SQLite 数据库文件
 ├── exports/              # CSV 导出目录
 ├── douyin_session/       # Playwright 持久化浏览器会话（登录态）
@@ -46,6 +51,7 @@ douyin-monitor/
         ├── dashboard.html    # 概览仪表盘
         ├── creators.html     # 博主管理（增删改查）
         ├── videos.html       # 视频列表（搜索/排序/分页）
+        ├── video_detail.html # 视频详情（快照历史、转录文本）
         └── trends.html       # 趋势图（Chart.js 折线图）
 ```
 
@@ -91,6 +97,15 @@ UNIQUE(creator_id, video_id)
 | share_count | INTEGER | 分享数 |
 | view_count | INTEGER | 播放量 (Web 端通常为 0) |
 | fetched_at | TIMESTAMP | 抓取时间 |
+
+### transcripts — 转录文本
+
+| 列 | 类型 | 说明 |
+|----|------|------|
+| id | INTEGER PK | 自增主键 |
+| video_id | INTEGER FK | 关联 videos.id |
+| full_text | TEXT | 完整转录文本（简体中文） |
+| created_at | TIMESTAMP | 转录时间 |
 
 每次抓取都会新增快照，通过对比相邻快照计算增长趋势。
 
@@ -204,8 +219,7 @@ python monitor.py report --creator 1
 ### 6. 启动 Web 面板
 
 ```bash
-cd web
-python app.py
+python monitor.py web --port 8080
 ```
 
 访问 `http://127.0.0.1:8080`
@@ -214,6 +228,7 @@ python app.py
 - **概览** — 各博主视频数、总时长、最高点赞、最近更新
 - **博主管理** — 添加/双击改名/删除/单独抓取
 - **视频列表** — 按点赞排序、标题搜索、分页浏览
+- **视频详情** — 快照历史、转录文本
 - **趋势图** — 点赞数变化折线图 (Chart.js)
 
 ### 7. 定时调度
@@ -224,7 +239,21 @@ python monitor.py schedule
 
 默认每 4 小时 (±15 分钟随机抖动) 自动抓取一轮。配置在 `config.yaml` 中调整。
 
-### 8. 导出 CSV
+### 8. 语音转录
+
+```bash
+# 转录所有待处理的视频
+python monitor.py transcribe
+
+# 转录指定博主、限制条数、指定并行数
+python monitor.py transcribe --creator 1 --limit 20 --workers 2
+```
+
+转录依赖 `faster-whisper` 和系统 `ffmpeg`。首次运行会自动下载模型（约 3GB）。
+
+> 注意：转录需要获取视频的 m3u8 流地址，部分视频可能因签名校验失败。此时需先登录浏览器，再运行 `python monitor.py export-cookies` 导出 cookies 供转录模块使用。
+
+### 9. 导出 CSV
 
 ```bash
 # 导出所有博主
@@ -239,14 +268,18 @@ python monitor.py export --creator 1
 ## 命令行参考
 
 ```
-python monitor.py add <url或sec_uid> [--name <名称>]    添加博主
+python monitor.py add <url或sec_uid> [--name <名称>]     添加博主
 python monitor.py remove <ID或名称或sec_uid>              删除博主
-python monitor.py list                                    列出所有博主
-python monitor.py run [--creator <id>]                    运行抓取
-python monitor.py report [--creator <id>]                 查看报告
-python monitor.py schedule                                启动定时调度
-python monitor.py login                                   扫码登录
-python monitor.py export [--creator <id>]                 导出 CSV
+python monitor.py list                                     列出所有博主
+python monitor.py run [--creator <id>]                     运行抓取
+python monitor.py report [--creator <id>]                  查看报告
+python monitor.py schedule                                 启动定时调度
+python monitor.py login                                    扫码登录
+python monitor.py login --slot 1                           多槽位登录
+python monitor.py export-cookies                           导出浏览器 cookies
+python monitor.py transcribe [--creator <id>] [--limit N]  转录视频语音
+python monitor.py export [--creator <id>]                  导出 CSV
+python monitor.py web [--port <port>]                      启动 Web 面板
 ```
 
 ## 配置 (config.yaml)
@@ -263,6 +296,7 @@ creators:
 schedule:
   interval_minutes: 240      # 抓取间隔
   jitter_minutes: 15         # 随机抖动（反爬）
+  daily_at: null             # 或设为 "03:00" 每天定时执行
 
 # 采集参数
 spider:
@@ -279,7 +313,7 @@ output:
 
 ## Windows 注意事项
 
-本项目的 Web 服务在 Windows 上通过线程池 + `ProactorEventLoop` 隔离 Playwright 浏览器进程，避免与 Uvicorn 的事件循环冲突。如遇 `NotImplementedError`，确认 `web/app.py` 中的 `_crawl_one()` 使用了 `asyncio.ProactorEventLoop()`。
+本项目通过 `WindowsProactorEventLoop` 隔离 Playwright 浏览器进程，避免与 Uvicorn 的事件循环冲突。无需额外配置。
 
 ## License
 
