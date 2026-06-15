@@ -180,7 +180,24 @@ class DouyinSpider:
         await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         await page.wait_for_timeout(random.randint(600, 1200))
 
-    async def fetch(self, sec_uid: str) -> list[Video]:
+    async def fetch(self, sec_uid: str, max_retries: int = 3) -> list[Video]:
+        """获取博主视频列表，支持自动重试（指数退避 + 抖动）。"""
+        import time as _time
+        for attempt in range(max_retries):
+            try:
+                return await self._fetch_attempt(sec_uid)
+            except Exception as e:
+                delay = (2 ** attempt) + random.uniform(0.5, 2.0)
+                logger.warning("fetch 第 %d/%d 次失败: %s, %.1fs 后重试",
+                               attempt + 1, max_retries, e, delay)
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(delay)
+                else:
+                    self._error = f"fetch 失败（已重试 {max_retries} 次）: {e}"
+                    logger.error(self._error)
+                    return []
+
+    async def _fetch_attempt(self, sec_uid: str) -> list[Video]:
         self.videos = []
         self.profile = None
         self._seen_ids = set()

@@ -1,3 +1,6 @@
+"""数据质量检查工具 — 验证爬取结果的 JSON 文件
+用法: python check_data.py <json_file>
+"""
 import json, sys
 from collections import Counter
 

@@ -14,6 +14,7 @@ def get_db() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
 
@@ -177,15 +178,32 @@ def update_last_fetched(creator_id: int):
         db.commit()
 
 
+def ingest_crawl_results(creator_id: int, videos: list[dict], profile: dict | None) -> int:
+    """将爬虫结果写入数据库（去重入库 + 快照 + 主页信息 + 时间戳），返回入库数"""
+    for vdict in videos:
+        db_id = upsert_video(creator_id, vdict)
+        add_snapshot(db_id, vdict)
+    if profile:
+        update_creator_profile(creator_id, profile)
+    update_last_fetched(creator_id)
+    return len(videos)
+
+
 # ─── Video + Snapshot ─────────────────────────────────────────
 
 def upsert_video(creator_id: int, video: dict) -> int:
-    """插入或忽略视频，返回 videos 表的 id"""
+    """插入或更新视频（幂等），返回 videos 表的 id"""
+    hashtags_json = json.dumps(video["hashtags"], ensure_ascii=False)
     with get_db() as db:
-        db.execute("""
-            INSERT OR IGNORE INTO videos
+        row = db.execute("""
+            INSERT INTO videos
                 (creator_id, video_id, title, cover_url, video_url, duration_ms, create_time, hashtags)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(creator_id, video_id)
+            DO UPDATE SET title=excluded.title, cover_url=excluded.cover_url,
+                          video_url=excluded.video_url, duration_ms=excluded.duration_ms,
+                          hashtags=excluded.hashtags
+            RETURNING id
         """, (
             creator_id,
             video["video_id"],
@@ -194,13 +212,9 @@ def upsert_video(creator_id: int, video: dict) -> int:
             video["video_url"],
             video["duration_ms"],
             video["create_time"],
-            json.dumps(video["hashtags"], ensure_ascii=False),
-        ))
+            hashtags_json,
+        )).fetchone()
         db.commit()
-        row = db.execute(
-            "SELECT id FROM videos WHERE creator_id = ? AND video_id = ?",
-            (creator_id, video["video_id"])
-        ).fetchone()
         return row["id"]
 
 
@@ -255,6 +269,37 @@ def get_stats(creator_id: int) -> dict:
             WHERE c.id = ?
         """, (creator_id,)).fetchone()
         return dict(row) if row else {}
+
+
+def get_all_stats() -> dict[int, dict]:
+    """批量获取所有博主的汇总统计（一次查询）"""
+    with get_db() as db:
+        rows = db.execute("""
+            SELECT c.id,
+                COUNT(DISTINCT v.id) as total_videos,
+                COUNT(DISTINCT s.id) as total_snapshots,
+                COALESCE(SUM(v.duration_ms) / 1000, 0) as total_duration_sec,
+                COALESCE(MAX(s.like_count), 0) as max_likes,
+                COALESCE(MAX(s.comment_count), 0) as max_comments
+            FROM creators c
+            LEFT JOIN videos v ON v.creator_id = c.id
+            LEFT JOIN snapshots s ON s.video_id = v.id
+            GROUP BY c.id
+        """).fetchall()
+        return {r["id"]: dict(r) for r in rows}
+
+
+def get_batch_transcripts(video_ids: list[int]) -> dict[int, str]:
+    """批量获取多个视频的转录文本"""
+    if not video_ids:
+        return {}
+    placeholders = ",".join("?" * len(video_ids))
+    with get_db() as db:
+        rows = db.execute(
+            f"SELECT video_id, full_text FROM transcripts WHERE video_id IN ({placeholders})",
+            video_ids,
+        ).fetchall()
+        return {r["video_id"]: r["full_text"] or "" for r in rows}
 
 
 def get_today_videos(limit: int = 20) -> list[dict]:

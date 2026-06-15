@@ -353,6 +353,28 @@ def download_video(fetcher, video_id, output_path):
 
 # ─── 完整流水线 ─────────────────────────────────────────────
 
+def transcribe_pending_videos(fetcher, limit: int = 20):
+    """转录所有待处理的视频（已下载但未转录的）"""
+    from db import get_db
+    with get_db() as db:
+        pending = db.execute("""
+            SELECT v.video_id, v.id FROM videos v
+            LEFT JOIN transcripts t ON t.video_id = v.id
+            WHERE t.id IS NULL ORDER BY v.id DESC LIMIT ?
+        """, (limit,)).fetchall()
+    if not pending:
+        logger.info("没有待转录的视频")
+        return 0
+    count = 0
+    for row in pending:
+        try:
+            if process_video(fetcher, row["video_id"], row["id"]):
+                count += 1
+        except Exception as e:
+            logger.error("转录失败 %s: %s", row["video_id"], e)
+    return count
+
+
 def process_video(fetcher, video_id, video_db_id):
     """完整流水线：下载 → 提取音频 → 转录 → 入库"""
     from db import get_db

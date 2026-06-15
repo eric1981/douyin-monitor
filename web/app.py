@@ -19,7 +19,8 @@ import yaml
 from db import (
     init_db, add_creator, remove_creator, rename_creator, list_creators, get_creator,
     upsert_video, add_snapshot, update_last_fetched, update_creator_profile, get_stats, get_db,
-    get_today_videos, get_today_summary,
+    get_all_stats, get_batch_transcripts, get_today_videos, get_today_summary,
+    ingest_crawl_results,
 )
 from spider import DouyinSpider
 from utils import resolve_secuid, async_resolve_secuid
@@ -78,8 +79,9 @@ env.globals["_freshness_text"] = lambda v: {"fresh": "刚刚", "stale": "今日"
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
     creators = list_creators()
+    all_stats = get_all_stats()
     for c in creators:
-        s = get_stats(c["id"])
+        s = all_stats.get(c["id"], {})
         c["total_videos"] = s.get("total_videos", 0)
         c["max_likes"] = s.get("max_likes", 0)
         c["max_comments"] = s.get("max_comments", 0)
@@ -100,13 +102,9 @@ async def dashboard(request: Request):
         v["duration_str"] = _fmt_duration(v["duration_ms"])
     # 批量获取今日视频的转录文本
     if today_videos:
-        with get_db() as db:
-            for v in today_videos:
-                t = db.execute(
-                    "SELECT full_text FROM transcripts WHERE video_id = ?",
-                    (v["id"],)
-                ).fetchone()
-                v["transcript"] = t["full_text"] if t else ""
+        transcripts = get_batch_transcripts([v["id"] for v in today_videos])
+        for v in today_videos:
+            v["transcript"] = transcripts.get(v["id"], "")
 
     return render("dashboard.html",
                   creators=creators,
@@ -285,38 +283,19 @@ async def api_run_fetch(creator_id: int = None):
                 if err:
                     logger.error("抓取 %s 失败: %s", c["name"], err)
                     return JSONResponse({"error": f"抓取 {c['name']} 失败: {err}"}, 500)
-                for vdict in videos:
-                    db_id = upsert_video(c["id"], vdict)
-                    add_snapshot(db_id, vdict)
-                    total += 1
-                if profile:
-                    update_creator_profile(c["id"], profile)
-                update_last_fetched(c["id"])
+                n = ingest_crawl_results(c["id"], videos, profile)
+                total += n
 
-            # 自动转录新视频（抓取完成后，复用线程池）
+            # 自动转录新视频
             try:
                 from transcriber import WHISPER_AVAILABLE
                 if WHISPER_AVAILABLE:
-                    with get_db() as db:
-                        rows = db.execute("""
-                            SELECT v.video_id, v.id FROM videos v
-                            LEFT JOIN transcripts t ON t.video_id = v.id
-                            WHERE t.id IS NULL ORDER BY v.id DESC LIMIT 20
-                        """).fetchall()
-                    if rows:
-                        def _transcribe_new():
-                            from transcriber import VideoFetcher, process_video
-                            count = 0
-                            with VideoFetcher() as fetcher:
-                                for r in rows:
-                                    try:
-                                        if process_video(fetcher, r["video_id"], r["id"]):
-                                            count += 1
-                                    except Exception as e:
-                                        logger.error("转录失败 %s: %s", r["video_id"], e)
-                            return count
-                        n = await asyncio.get_running_loop().run_in_executor(pool, _transcribe_new)
-                        logger.info("自动转录: %d 条", n)
+                    def _transcribe_all():
+                        from transcriber import VideoFetcher, transcribe_pending_videos
+                        with VideoFetcher() as fetcher:
+                            return transcribe_pending_videos(fetcher)
+                    n = await asyncio.get_running_loop().run_in_executor(pool, _transcribe_all)
+                    logger.info("自动转录: %d 条", n)
             except ImportError:
                 pass
 
