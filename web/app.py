@@ -29,6 +29,12 @@ logger = logging.getLogger(__name__)
 BASE_DIR = Path(__file__).parent
 env = Environment(loader=FileSystemLoader(str(BASE_DIR / "templates")))
 env.filters["format_number"] = lambda v: f"{v:,}"
+env.filters["format_number_cn"] = lambda v: (
+    f"{v/100000000:.1f}亿" if v >= 100000000 else
+    f"{v/10000:.1f}万" if v >= 10000 else
+    f"{v:,}"
+)
+env.filters["int"] = int
 
 
 @asynccontextmanager
@@ -47,6 +53,26 @@ def render(name: str, **ctx) -> HTMLResponse:
     return HTMLResponse(template.render(**ctx))
 
 
+def _freshness_level(last_fetched_at):
+    if not last_fetched_at:
+        return "old"
+    try:
+        from datetime import datetime, timedelta
+        dt = datetime.fromisoformat(last_fetched_at)
+        delta = datetime.now() - dt
+        if delta < timedelta(hours=6):
+            return "fresh"
+        elif delta < timedelta(days=1):
+            return "stale"
+        else:
+            return "old"
+    except Exception:
+        return "old"
+
+env.globals["_freshness_level"] = _freshness_level
+env.globals["_freshness_text"] = lambda v: {"fresh": "刚刚", "stale": "今日", "old": "较早"}.get(_freshness_level(v), "较早")
+
+
 # ─── 页面路由 ──────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)
@@ -58,6 +84,15 @@ async def dashboard(request: Request):
         c["max_likes"] = s.get("max_likes", 0)
         c["max_comments"] = s.get("max_comments", 0)
 
+    total_likes = 0
+    with get_db() as db:
+        row = db.execute("""
+            SELECT COALESCE(SUM(s.like_count), 0) as total_likes
+            FROM snapshots s
+            WHERE s.id = (SELECT id FROM snapshots WHERE video_id = s.video_id ORDER BY id DESC LIMIT 1)
+        """).fetchone()
+        total_likes = row["total_likes"] if row else 0
+
     today_summary = get_today_summary()
     today_videos = get_today_videos(limit=20)
     for v in today_videos:
@@ -65,7 +100,6 @@ async def dashboard(request: Request):
         v["duration_str"] = _fmt_duration(v["duration_ms"])
     # 批量获取今日视频的转录文本
     if today_videos:
-        from db import get_db
         with get_db() as db:
             for v in today_videos:
                 t = db.execute(
@@ -77,7 +111,12 @@ async def dashboard(request: Request):
     return render("dashboard.html",
                   creators=creators,
                   today_summary=today_summary,
-                  today_videos=today_videos)
+                  today_videos=today_videos,
+                  summary_stats={
+                      "total_creators": len(creators),
+                      "total_videos": sum(c.get("total_videos", 0) for c in creators),
+                      "total_likes": total_likes,
+                  })
 
 
 @app.get("/creators", response_class=HTMLResponse)

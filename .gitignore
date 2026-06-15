@@ -27,3 +27,6 @@ exports/
 
 # 配置文件（含博主 UID 等隐私，推示例模板）
 config.yaml
+
+# Python 运行时缓存
+Python/

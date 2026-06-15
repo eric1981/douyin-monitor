@@ -24,7 +24,7 @@ import logging
 import random
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from playwright.async_api import async_playwright
@@ -185,22 +185,33 @@ async def cmd_run(args: list[str]):
     # 自动转录新视频
     try:
         from transcriber import WHISPER_AVAILABLE, process_video, VideoFetcher
-        if WHISPER_AVAILABLE:
-          with VideoFetcher() as f:
-            from db import get_db
-            with get_db() as db:
-                new_rows = db.execute("""
-                    SELECT v.video_id, v.id FROM videos v
-                    LEFT JOIN transcripts t ON t.video_id = v.id
-                    WHERE t.id IS NULL ORDER BY v.id DESC LIMIT 20
-                """).fetchall()
-            for row in new_rows:
-                try:
-                    process_video(f, row["video_id"], row["id"])
-                except Exception as e:
-                    logger.error("转录失败 %s: %s", row["video_id"], e)
-    except ImportError:
-        pass
+    except ImportError as e:
+        logger.warning("转录模块导入失败: %s", e)
+        WHISPER_AVAILABLE = False
+
+    if not WHISPER_AVAILABLE:
+        logger.info("faster-whisper 未安装，跳过自动转录（可用 pip install faster-whisper 安装）")
+    else:
+        from db import get_db
+        try:
+            with VideoFetcher() as fetcher:
+                with get_db() as db:
+                    pending = db.execute("""
+                        SELECT v.video_id, v.id FROM videos v
+                        LEFT JOIN transcripts t ON t.video_id = v.id
+                        WHERE t.id IS NULL ORDER BY v.id DESC LIMIT 20
+                    """).fetchall()
+                if not pending:
+                    logger.info("没有待转录的视频")
+                else:
+                    logger.info("自动转录 %d 个视频...", len(pending))
+                    for row in pending:
+                        try:
+                            process_video(fetcher, row["video_id"], row["id"])
+                        except Exception as e:
+                            logger.error("转录失败 %s: %s", row["video_id"], e)
+        except Exception as e:
+            logger.error("自动转录过程异常: %s", e)
 
     # 自动导出
     if config.get("output", {}).get("auto_export_csv"):
@@ -327,25 +338,54 @@ def cmd_export(args: list[str]):
 
 # ─── 命令：schedule ────────────────────────────────────────────
 
+def _seconds_until(hour_str: str) -> float:
+    """计算距离下一个指定时刻（HH:MM）的秒数"""
+    now = datetime.now()
+    parts = hour_str.strip().split(":")
+    h, m = int(parts[0]), int(parts[1])
+    target = now.replace(hour=h, minute=m, second=0, microsecond=0)
+    if target <= now:
+        target += timedelta(days=1)
+    return (target - now).total_seconds()
+
+
 async def cmd_schedule():
     """定时调度循环"""
     config = load_config()
-    interval = config.get("schedule", {}).get("interval_minutes", 240)
-    jitter = config.get("schedule", {}).get("jitter_minutes", 15)
+    sched = config.get("schedule", {})
 
-    logger.info("每 %d 分钟运行一次 (抖动 ±%d 分钟)", interval, jitter)
-    logger.info("Ctrl+C 停止")
+    daily_at = sched.get("daily_at")
 
-    while True:
-        print(f"\n{'#'*50}")
-        logger.info("[%s] 开始新一轮抓取", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-        await cmd_run([])
+    if daily_at:
+        logger.info("每日定时模式: 每天 %s 执行一次", daily_at)
+        logger.info("Ctrl+C 停止")
+        while True:
+            wait = _seconds_until(daily_at)
+            next_run = datetime.now().timestamp() + wait
+            logger.info("下次运行: %s",
+                        datetime.fromtimestamp(next_run).strftime("%Y-%m-%d %H:%M:%S"))
+            await asyncio.sleep(wait)
 
-        wait = interval * 60 + random.randint(-jitter * 60, jitter * 60)
-        wait = max(wait, 60)
-        next_run = datetime.now().timestamp() + wait
-        logger.info("下次运行: %s", datetime.fromtimestamp(next_run).strftime("%H:%M:%S"))
-        await asyncio.sleep(wait)
+            print(f"\n{'#'*50}")
+            logger.info("[%s] 开始每日抓取", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+            await cmd_run([])
+    else:
+        interval = sched.get("interval_minutes", 240)
+        jitter = sched.get("jitter_minutes", 15)
+
+        logger.info("间隔模式: 每 %d 分钟运行一次 (抖动 ±%d 分钟)", interval, jitter)
+        logger.info("Ctrl+C 停止")
+
+        while True:
+            print(f"\n{'#'*50}")
+            logger.info("[%s] 开始新一轮抓取", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+            await cmd_run([])
+
+            wait = interval * 60 + random.randint(-jitter * 60, jitter * 60)
+            wait = max(wait, 60)
+            next_run = datetime.now().timestamp() + wait
+            logger.info("下次运行: %s", datetime.fromtimestamp(next_run).strftime("%H:%M:%S"))
+            await asyncio.sleep(wait)
 
 
 # ─── 命令：login ──────────────────────────────────────────────

@@ -2,10 +2,19 @@
 {% block content %}
 <h1>监控概览</h1>
 
-<!-- ── 抓取按钮（顶部）── -->
+{% if schedule_status %}
+<div class="schedule-bar">
+    <span class="schedule-info">
+        ⏱ 定时调度: {{ schedule_status.mode }}
+        {% if schedule_status.next_run %}· 下次执行: {{ schedule_status.next_run }}{% endif %}
+    </span>
+</div>
+{% endif %}
+
 <div class="actions-top">
     <button class="btn btn-primary" onclick="runFetch()">🔄 抓取全部</button>
     <button class="btn btn-secondary" onclick="transcribeAll()">📝 获取全部文本</button>
+    <button class="btn btn-outline" onclick="exportCSV()">📥 导出 CSV</button>
     <label style="margin-left:12px;font-size:13px;color:var(--text-secondary)">
         Whisper:
         <select id="whisper-model" onchange="changeModel()" style="padding:4px 8px;font-size:13px;margin-left:4px">
@@ -19,21 +28,20 @@
     <span class="fetch-status" id="fetch-status"></span>
 </div>
 
-<!-- ── 汇总看板 ── -->
-<div class="summary-grid" id="summary-grid">
+<div class="summary-grid">
     <div class="summary-card">
         <div class="summary-icon">👤</div>
-        <div class="summary-value" id="sum-creators">-</div>
+        <div class="summary-value">{{ summary_stats.total_creators }}</div>
         <div class="summary-label">监控博主</div>
     </div>
     <div class="summary-card">
         <div class="summary-icon">🎬</div>
-        <div class="summary-value" id="sum-videos">-</div>
+        <div class="summary-value">{{ summary_stats.total_videos | format_number }}</div>
         <div class="summary-label">总视频数</div>
     </div>
     <div class="summary-card">
         <div class="summary-icon">👍</div>
-        <div class="summary-value" id="sum-likes">-</div>
+        <div class="summary-value">{{ summary_stats.total_likes | format_number_cn }}</div>
         <div class="summary-label">总点赞数</div>
     </div>
     <div class="summary-card summary-card-today">
@@ -53,7 +61,6 @@
     </div>
 </div>
 
-<!-- ── 今日视频 ── -->
 {% if today_videos %}
 <div class="today-section">
     <h2>📅 今日视频 <span class="today-count">{{ today_videos | length }} 条</span></h2>
@@ -85,7 +92,6 @@
 </div>
 {% endif %}
 
-<!-- ── 博主卡片 ── -->
 <div class="stats-grid">
     {% for c in creators %}
     <div class="stat-card">
@@ -98,6 +104,9 @@
                 {% if c.nickname and c.nickname != c.name %}
                 <span class="nickname">@{{ c.nickname }}</span>
                 {% endif %}
+            </div>
+            <div class="freshness-badge freshness-{{ _freshness_level(c.last_fetched_at) }}">
+                {{ _freshness_text(c.last_fetched_at) }}
             </div>
         </div>
         {% if c.follower_count %}
@@ -126,76 +135,101 @@
     {% endfor %}
 </div>
 
-<script>
-// 加载汇总数据
-(async function loadSummary() {
-    try {
-        const resp = await fetch('/api/stats');
-        const data = await resp.json();
-        document.getElementById('sum-creators').textContent = data.total_creators;
-        document.getElementById('sum-videos').textContent = data.total_videos;
-        const likes = data.total_likes || 0;
-        document.getElementById('sum-likes').textContent = likes >= 10000
-            ? (likes / 10000).toFixed(1) + '万'
-            : likes.toLocaleString();
-    } catch(e) { /* 静默降级 */ }
-})();
+{% if creators | length > 1 %}
+<div style="text-align:center;margin-top:var(--spacing-lg)">
+    <a href="/trends/compare" class="btn btn-primary">📊 多博主趋势对比</a>
+</div>
+{% endif %}
 
+<script>
 async function runFetch() {
-    const el = document.getElementById('fetch-status');
-    el.textContent = '正在抓取...';
+    var el = document.getElementById('fetch-status');
+    el.textContent = '⏳ 正在抓取...';
     try {
-        const resp = await fetch('/api/run', { method: 'POST' });
-        const data = await resp.json();
-        el.textContent = '完成 — 共 ' + data.total + ' 条视频入库';
-        setTimeout(() => location.reload(), 1500);
+        var resp = await fetch('/api/run', { method: 'POST' });
+        var data = await resp.json();
+        if (data.error) {
+            showToast(data.error, 'error');
+            el.textContent = '抓取失败';
+        } else {
+            showToast('抓取完成 — 共 ' + data.total + ' 条视频入库', 'success');
+            el.textContent = '完成 — 共 ' + data.total + ' 条视频入库';
+            setTimeout(function() { location.reload(); }, 2000);
+        }
     } catch(e) {
+        showToast('抓取失败: ' + e, 'error');
         el.textContent = '失败: ' + e;
     }
 }
 
 async function transcribeAll() {
-    const el = document.getElementById('fetch-status');
-    el.textContent = '正在转录，请耐心等待...';
+    var el = document.getElementById('fetch-status');
+    el.textContent = '⏳ 正在转录，请耐心等待...';
+    showToast('开始批量转录，请耐心等待...', 'info');
     try {
-        const resp = await fetch('/api/transcribe-all', { method: 'POST' });
-        const data = await resp.json();
+        var resp = await fetch('/api/transcribe-all', { method: 'POST' });
+        var data = await resp.json();
         if (data.error) {
+            showToast(data.error, 'error');
             el.textContent = '失败: ' + data.error;
         } else {
-            el.textContent = '完成 — ' + data.ok + ' 条转录成功'
-                + (data.error ? ', ' + data.error + ' 条失败' : '')
-                + (data.skipped ? ', ' + data.skipped + ' 条跳过' : '');
+            var msg = '完成 — ' + data.ok + ' 条转录成功';
+            if (data.error) msg += ', ' + data.error + ' 条失败';
+            if (data.skipped) msg += ', ' + data.skipped + ' 条跳过';
+            showToast(msg, 'success');
+            el.textContent = msg;
+            setTimeout(function() { location.reload(); }, 2000);
         }
-        setTimeout(() => location.reload(), 2000);
     } catch(e) {
+        showToast('转录失败: ' + e, 'error');
         el.textContent = '失败: ' + e;
     }
 }
 
-// 加载当前模型配置
+async function exportCSV() {
+    try {
+        var el = document.getElementById('fetch-status');
+        el.textContent = '正在导出...';
+        var resp = await fetch('/api/export');
+        if (!resp.ok) {
+            var err = await resp.json();
+            showToast(err.error || '导出失败', 'error');
+            el.textContent = '';
+            return;
+        }
+        var blob = await resp.blob();
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = 'douyin_export_' + new Date().toISOString().slice(0,10) + '.csv';
+        a.click();
+        URL.revokeObjectURL(url);
+        showToast('导出成功', 'success');
+        el.textContent = '';
+    } catch(e) {
+        showToast('导出失败: ' + e, 'error');
+    }
+}
+
 (async function loadModel() {
     try {
-        const resp = await fetch('/api/transcriber-config');
-        const cfg = await resp.json();
+        var resp = await fetch('/api/transcriber-config');
+        var cfg = await resp.json();
         document.getElementById('whisper-model').value = cfg.model || 'small';
     } catch(e) {}
 })();
 
 async function changeModel() {
-    const sel = document.getElementById('whisper-model');
-    const el = document.getElementById('fetch-status');
-    el.textContent = '保存中...';
+    var sel = document.getElementById('whisper-model');
     try {
         await fetch('/api/transcriber-config', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ model: sel.value })
         });
-        el.textContent = `模型已切换为 ${sel.value}，下次转录生效`;
-        setTimeout(() => { el.textContent = ''; }, 3000);
+        showToast('模型已切换为 ' + sel.value + '，下次转录生效', 'success');
     } catch(e) {
-        el.textContent = '保存失败: ' + e;
+        showToast('保存失败: ' + e, 'error');
     }
 }
 </script>
