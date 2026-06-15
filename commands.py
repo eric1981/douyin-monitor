@@ -85,7 +85,7 @@ def cmd_remove(args: list[str]):
 
 # ─── 命令：list ────────────────────────────────────────────────
 
-def cmd_list():
+def cmd_list(_args=None):
     init_db()
     creators = list_creators()
     if not creators:
@@ -303,7 +303,7 @@ def _seconds_until(hour_str: str) -> float:
     return (target - now).total_seconds()
 
 
-async def cmd_schedule():
+async def cmd_schedule(_args=None):
     config = load_config()
     sched = config.get("schedule", {})
 
@@ -343,8 +343,8 @@ async def cmd_schedule():
 
 # ─── 命令：login ──────────────────────────────────────────────
 
-async def cmd_login():
-    args = sys.argv[2:] if len(sys.argv) > 2 else []
+async def cmd_login(_args=None):
+    args = (_args or [])
     slot = None
     if "--slot" in args:
         idx = args.index("--slot")
