@@ -14,6 +14,8 @@
   python monitor.py transcribe [--creator <id>] [--limit N] [--workers 2] 转录视频语音
   python monitor.py export [--creator <id>]                  导出 CSV
   python monitor.py web [--port <port>]                      启动 Web 面板
+	  python monitor.py comments [--creator <id>]                抓取评论区（点赞>0 且有回复的评论）
+	                       [--video-limit N] [--pages N] [--comment-limit N]
 """
 
 import asyncio

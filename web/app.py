@@ -1,4 +1,5 @@
 """抖音博主监控 - Web 前端 (FastAPI)"""
+import asyncio
 import sys
 import logging
 from contextlib import asynccontextmanager
@@ -12,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader
 import uvicorn
 import asyncio
-import concurrent.futures
+import traceback as _tb
 import json
 import yaml
 
@@ -20,7 +21,8 @@ from db import (
     init_db, add_creator, remove_creator, rename_creator, list_creators, get_creator,
     upsert_video, add_snapshot, update_last_fetched, update_creator_profile, get_stats, get_db,
     get_all_stats, get_batch_transcripts, get_today_videos, get_today_summary,
-    ingest_crawl_results,
+    ingest_crawl_results, upsert_comment, list_comments, get_comment_count,
+    delete_absent_comments,
 )
 from spider import DouyinSpider
 from utils import resolve_secuid, async_resolve_secuid
@@ -208,7 +210,8 @@ async def video_detail(request: Request, video_db_id: int):
     v["duration_str"] = _fmt_duration(v["duration_ms"])
     v["hashtags_list"] = json.loads(v["hashtags"]) if v["hashtags"] else []
     transcript = get_transcript(video_db_id)
-    return render("video_detail.html", v=v, transcript=transcript)
+    comment_count = get_comment_count(video_db_id)
+    return render("video_detail.html", v=v, transcript=transcript, comment_count=comment_count)
 @app.get("/trends/{creator_id}", response_class=HTMLResponse)
 async def trends_page(request: Request, creator_id: int):
     creator = get_creator(str(creator_id))
@@ -494,6 +497,68 @@ async def api_stats():
         """).fetchone()["total_likes"]
 
     return {"total_creators": tc, "total_videos": tv, "total_snapshots": ts, "total_likes": tl}
+
+
+# ─── 评论 API ─────────────────────────────────────────────
+
+@app.get("/api/comments/{video_db_id}")
+async def api_list_comments(video_db_id: int):
+    """返回指定视频的已存评论（JSON）。"""
+    rows = list_comments(video_db_id)
+    return {"comments": rows, "total": len(rows)}
+
+
+@app.post("/api/comments/fetch/{video_db_id}")
+async def api_fetch_comments(video_db_id: int):
+    """触发抓取指定视频的评论。（在独立线程跑 Playwright，避免 Python 3.14 事件循环不兼容）"""
+    from comment_spider import CommentSpider
+
+    with get_db() as db:
+        video = db.execute(
+            "SELECT id, video_id FROM videos WHERE id = ?",
+            (video_db_id,),
+        ).fetchone()
+    if not video:
+        return JSONResponse({"error": "视频不存在"}, 404)
+
+    logger.info("开始抓取评论 video_db_id=%s", video_db_id)
+
+    def _sync_fetch(vid: str) -> list[dict]:
+        """在独立线程中创建自己的事件循环跑 Playwright。"""
+        if sys.platform == "win32":
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            spider = CommentSpider(headless=True)
+            return loop.run_until_complete(
+                spider.fetch_comments(vid, max_pages=3, max_total=30)
+            )
+        finally:
+            loop.close()
+
+    loop = asyncio.get_event_loop()
+    try:
+        comments = await asyncio.wait_for(
+            loop.run_in_executor(None, _sync_fetch, video["video_id"]),
+            timeout=60,
+        )
+    except asyncio.TimeoutError:
+        return JSONResponse({"error": "抓取超时"}, 504)
+    except Exception as e:
+        logger.error("抓取失败: type=%s msg=%r\n%s", type(e).__name__, str(e), _tb.format_exc())
+        err_msg = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+        return JSONResponse({"error": err_msg}, 500)
+
+    saved = 0
+    for c in comments:
+        upsert_comment(video_db_id, c)
+        saved += 1
+
+    active_ids = [c["comment_id"] for c in comments]
+    delete_absent_comments(video_db_id, active_ids)
+
+    return {"saved": saved, "total": len(comments)}
 
 
 def _fmt_time(ts):

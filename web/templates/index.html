@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>抖音监控面板</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f5f5f5; color: #333; padding: 24px; }
+  h1 { font-size: 22px; margin-bottom: 16px; }
+  .meta { color: #666; font-size: 13px; margin-bottom: 20px; }
+  .video-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
+  .card { background: #fff; border-radius: 10px; overflow: hidden; box-shadow: 0 1px 4px rgba(0,0,0,.08); transition: box-shadow .15s; }
+  .card:hover { box-shadow: 0 3px 12px rgba(0,0,0,.12); }
+  .card a { text-decoration: none; color: inherit; display: block; }
+  .card-body { padding: 12px 14px; }
+  .card-title { font-size: 14px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin-bottom: 8px; }
+  .card-meta { font-size: 12px; color: #888; display: flex; gap: 12px; flex-wrap: wrap; }
+  .card-meta span { white-space: nowrap; }
+  .card-creator { font-size: 12px; color: #1677ff; margin-bottom: 4px; }
+  .empty { text-align: center; color: #999; padding: 60px 0; }
+  .nav { margin-bottom: 20px; }
+  .nav a { color: #1677ff; text-decoration: none; font-size: 14px; margin-right: 16px; }
+  .nav a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<h1>抖音监控面板</h1>
+<div class="meta">{{ VIDEO_COUNT }} 个视频 · {{ CREATOR_COUNT }} 位博主</div>
+
+<div class="nav">{{ NAV_LINKS }}</div>
+
+{{ CARDS }}
+</body>
+</html>

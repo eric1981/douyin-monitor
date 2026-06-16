@@ -66,6 +66,95 @@
     {% endif %}
 </div>
 
+<hr style="margin:24px 0;border:none;border-top:1px solid var(--border)">
+
+<div class="detail-comments">
+    <h2 style="margin-bottom:12px;font-size:16px;">💬 评论 <span id="comment-badge" style="font-size:13px;color:var(--text-secondary);font-weight:400;">({{ comment_count }})</span></h2>
+
+    <div style="margin-bottom:12px;">
+        <button class="btn btn-primary btn-sm" id="fetch-comments-btn" onclick="fetchComments({{ v.id }})">获取评论</button>
+        <span id="fetch-status" style="margin-left:8px;font-size:13px;color:var(--text-secondary)"></span>
+    </div>
+
+    <div id="comment-list">
+        <p class="empty-state" style="padding:20px 0;text-align:center;color:var(--text-secondary);">暂无评论数据</p>
+    </div>
+</div>
+
+<style>
+.comment-item { padding:12px 0; border-bottom:1px solid var(--border); }
+.comment-item:last-child { border-bottom:none; }
+.comment-user { font-weight:600; font-size:13px; color:var(--link); }
+.comment-text { font-size:14px; margin:4px 0 6px; line-height:1.5; color:var(--text); }
+.comment-meta { font-size:12px; color:var(--text-secondary); display:flex; gap:16px; flex-wrap:wrap; }
+.comment-meta .ip { opacity:.6; }
+</style>
+
+<script>
+async function loadComments(videoDbId) {
+    var list = document.getElementById('comment-list');
+    var badge = document.getElementById('comment-badge');
+    try {
+        var res = await fetch('/api/comments/' + videoDbId);
+        var data = await res.json();
+        var comments = data.comments || [];
+        badge.textContent = '(' + comments.length + ')';
+        if (!comments.length) {
+            list.innerHTML = '<p class="empty-state" style="padding:20px 0;text-align:center;color:var(--text-secondary);">暂无评论数据</p>';
+            return;
+        }
+        var html = '';
+        for (var i = 0; i < comments.length; i++) {
+            var c = comments[i];
+            var ipTag = c.ip_label ? '<span class="ip">📍 ' + esc(c.ip_label) + '</span>' : '';
+            html += '<div class="comment-item">' +
+                '<div class="comment-user">' + esc(c.user_name) + '</div>' +
+                '<div class="comment-text">' + esc(c.text) + '</div>' +
+                '<div class="comment-meta">' +
+                '<span>❤️ ' + fmtNum(c.digg_count) + '</span>' +
+                '<span>💬 回复 ' + c.reply_count + '</span>' +
+                ipTag +
+                '<span>' + fmtTime(c.create_time) + '</span>' +
+                '</div></div>';
+        }
+        list.innerHTML = html;
+    } catch (e) {
+        list.innerHTML = '<p class="empty-state" style="padding:20px 0;text-align:center;color:var(--text-secondary);">加载失败</p>';
+    }
+}
+
+async function fetchComments(videoDbId) {
+    var btn = document.getElementById('fetch-comments-btn');
+    var status = document.getElementById('fetch-status');
+    btn.disabled = true;
+    status.textContent = '⏳ 抓取中... 约需 10-30 秒';
+    try {
+        var res = await fetch('/api/comments/fetch/' + videoDbId, { method: 'POST' });
+        var data = await res.json();
+        if (!res.ok || data.error) {
+            status.textContent = '❌ ' + (data.error || 'HTTP ' + res.status);
+        } else {
+            status.textContent = '✅ 完成：新增 ' + (data.saved || 0) + ' 条评论';
+            await loadComments(videoDbId);
+        }
+    } catch (e) {
+        status.textContent = '❌ ' + e.message;
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+// 辅助函数
+function esc(s) { return (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function fmtTime(ts) { if (!ts) return ''; var d = new Date(ts * 1000); return d.toLocaleDateString() + ' ' + d.toLocaleTimeString(); }
+function fmtNum(n) { if (!n) return '0'; return n.toLocaleString(); }
+
+// 有缓存评论时自动加载
+{% if comment_count > 0 %}
+loadComments({{ v.id }});
+{% endif %}
+</script>
+
 <script>
 // 加载当前模型配置
 (async function loadModel() {

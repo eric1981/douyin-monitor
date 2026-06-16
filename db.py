@@ -52,6 +52,21 @@ def init_db():
             UNIQUE(creator_id, video_id)
         );
 
+        CREATE TABLE IF NOT EXISTS comments (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            video_id        INTEGER NOT NULL REFERENCES videos(id),
+            comment_id      TEXT NOT NULL,
+            text            TEXT,
+            digg_count      INTEGER DEFAULT 0,
+            reply_count     INTEGER DEFAULT 0,
+            user_name       TEXT,
+            ip_label        TEXT,
+            create_time     INTEGER,
+            first_seen      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_seen       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(video_id, comment_id)
+        );
+
         CREATE TABLE IF NOT EXISTS snapshots (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             video_id    INTEGER NOT NULL REFERENCES videos(id),
@@ -373,3 +388,74 @@ def get_transcript(video_db_id: int) -> dict | None:
             d["segments"] = json.loads(d["segments"]) if d["segments"] else []
             return d
         return None
+
+
+# ─── Comments ────────────────────────────────────────────
+
+def upsert_comment(video_db_id: int, comment: dict) -> int:
+    """插入或更新一条评论。返回评论 id。"""
+    with get_db() as db:
+        db.execute("""
+            INSERT INTO comments (video_id, comment_id, text, digg_count, reply_count,
+                                  user_name, ip_label, create_time, last_seen)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(video_id, comment_id) DO UPDATE SET
+                text        = COALESCE(excluded.text, comments.text),
+                digg_count  = excluded.digg_count,
+                reply_count = excluded.reply_count,
+                user_name   = COALESCE(excluded.user_name, comments.user_name),
+                ip_label    = COALESCE(excluded.ip_label, comments.ip_label),
+                last_seen   = CURRENT_TIMESTAMP
+        """, (
+            video_db_id,
+            comment["comment_id"],
+            comment.get("text"),
+            comment.get("digg_count", 0),
+            comment.get("reply_count", 0),
+            comment.get("user_name"),
+            comment.get("ip_label"),
+            comment.get("create_time"),
+        ))
+        db.commit()
+        row = db.execute(
+            "SELECT id FROM comments WHERE video_id = ? AND comment_id = ?",
+            (video_db_id, comment["comment_id"]),
+        ).fetchone()
+        return row["id"] if row else 0
+
+
+def list_comments(video_db_id: int, order_by: str = "digg_count DESC", limit: int = 200) -> list[dict]:
+    """查询指定视频的评论列表。"""
+    with get_db() as db:
+        rows = db.execute(f"""
+            SELECT id, comment_id, text, digg_count, reply_count,
+                   user_name, ip_label, create_time, first_seen, last_seen
+            FROM comments
+            WHERE video_id = ?
+            ORDER BY {order_by}
+            LIMIT ?
+        """, (video_db_id, limit)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_comment_count(video_db_id: int) -> int:
+    """获取指定视频的评论数。"""
+    with get_db() as db:
+        row = db.execute(
+            "SELECT COUNT(*) AS cnt FROM comments WHERE video_id = ?",
+            (video_db_id,),
+        ).fetchone()
+        return row["cnt"] if row else 0
+
+
+def delete_absent_comments(video_db_id: int, active_comment_ids: list[str]):
+    """删除不再出现在 API 中的评论（已被作者删除）。"""
+    if not active_comment_ids:
+        return
+    with get_db() as db:
+        placeholders = ",".join("?" for _ in active_comment_ids)
+        db.execute(f"""
+            DELETE FROM comments
+            WHERE video_id = ? AND comment_id NOT IN ({placeholders})
+        """, (video_db_id, *active_comment_ids))
+        db.commit()

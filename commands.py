@@ -19,6 +19,7 @@ from playwright.async_api import async_playwright
 from db import (
     init_db, add_creator, remove_creator, list_creators, get_creator,
     get_stats, get_trend, get_db, DB_PATH, ingest_crawl_results,
+    upsert_comment, list_comments, get_comment_count, delete_absent_comments,
 )
 from spider import DouyinSpider
 from transcriber import (
@@ -500,6 +501,111 @@ def cmd_transcribe(args: list[str]):
     logger.info("转录完成: %d/%d 条", done_count[0], total_pending)
 
 
+# ─── 命令：comments ────────────────────────────────────────────
+
+def cmd_comments(args: list[str]):
+    """抓取评论区数据。"""
+    import asyncio
+
+    creator_arg = None
+    video_limit = 50
+    pages = 3
+    comment_limit = 30
+
+    i = 0
+    while i < len(args):
+        if args[i] == "--creator" and i + 1 < len(args):
+            creator_arg = args[i + 1]
+            i += 2
+        elif args[i] == "--video-limit" and i + 1 < len(args):
+            video_limit = int(args[i + 1])
+            i += 2
+        elif args[i] == "--pages" and i + 1 < len(args):
+            pages = int(args[i + 1])
+            i += 2
+        elif args[i] == "--comment-limit" and i + 1 < len(args):
+            comment_limit = int(args[i + 1])
+            i += 2
+        else:
+            i += 1
+
+    init_db()
+
+    if creator_arg:
+        creator = get_creator(creator_arg)
+        if not creator:
+            logger.error("未找到博主: %s", creator_arg)
+            return
+        creator_ids = [creator["id"]]
+    else:
+        creator_ids = [c["id"] for c in list_creators() if c["enabled"]]
+        if not creator_ids:
+            logger.error("没有启用的博主，请先用 add 添加")
+            return
+
+    all_videos: list[dict] = []
+    for cid in creator_ids:
+        with get_db() as db:
+            rows = db.execute("""
+                SELECT id, video_id, title, create_time
+                FROM videos
+                WHERE creator_id = ?
+                ORDER BY create_time DESC
+                LIMIT ?
+            """, (cid, video_limit)).fetchall()
+        all_videos.extend(dict(r) for r in rows)
+
+    if not all_videos:
+        logger.info("没有找到视频")
+        return
+
+    logger.info("共 %d 个视频待抓取评论（上限 %d 页/视频）", len(all_videos), pages)
+
+    total_comments = 0
+    import random
+
+    from comment_spider import CommentSpider
+
+    for idx, video in enumerate(all_videos):
+        video_db_id = video["id"]
+        vid = video["video_id"]
+        title = (video.get("title") or "")[:40]
+
+        logger.info("[%d/%d] %s (%s)", idx + 1, len(all_videos), title, vid)
+
+        try:
+            spider = CommentSpider()
+            comments = asyncio.run(
+                spider.fetch_comments(vid, max_pages=pages, max_total=comment_limit)
+            )
+        except Exception as e:
+            logger.error("  ❌ 抓取失败: %s", e)
+            continue
+
+        if not comments:
+            logger.info("  无符合条件的评论")
+            continue
+
+        saved = 0
+        for c in comments:
+            upsert_comment(video_db_id, c)
+            saved += 1
+        total_comments += saved
+        logger.info("  ✅ 入库 %d 条评论", saved)
+
+        # 删除已不存在的评论（被作者删除的）
+        active_ids = [c["comment_id"] for c in comments]
+        delete_absent_comments(video_db_id, active_ids)
+
+        # 视频间间隔，降低风控概率
+        if idx < len(all_videos) - 1:
+            delay = random.uniform(3, 6)
+            logger.info("  等待 %.1fs 避免风控...", delay)
+            time.sleep(delay)
+
+    logger.info("🎯 完成：共入库 %d 条评论", total_comments)
+
+
 # ─── 入口函数表 ────────────────────────────────────────────────
 
 SYNC_COMMANDS = {
@@ -510,6 +616,7 @@ SYNC_COMMANDS = {
     "export": cmd_export,
     "web": cmd_web,
     "transcribe": cmd_transcribe,
+    "comments": cmd_comments,
 }
 
 ASYNC_COMMANDS = {
