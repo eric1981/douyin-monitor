@@ -334,31 +334,36 @@ class VideoFetcher:
 # ─── 下载 ────────────────────────────────────────────────────
 
 def download_video(fetcher, video_id, output_path):
-    """下载抖音视频：网络拦截捕获视频媒体响应。"""
+    """下载抖音视频：page.route 拦截视频请求获取完整响应体。"""
     page = fetcher._context.new_page()
     result = {}
 
     def _handle_route(route):
+        url = route.request.url
+        rtype = route.request.resource_type
         if result:
             route.continue_()
             return
-        rtype = route.request.resource_type
-        url = route.request.url
-        if rtype != "media" and not any(k in url for k in (".mp4?", "/play/", "/download/")):
+        # 只拦截可能是视频的请求
+        is_video_like = (
+            rtype in ("media", "fetch", "xhr", "other") or
+            any(k in url for k in (".mp4", ".m4s", ".ts", "video", "bytegecko", "play/"))
+        )
+        if not is_video_like:
             route.continue_()
             return
+        logger.info("[video-candidate] type=%s url=%s", rtype, url[:120])
         try:
             resp = route.fetch()
             body = resp.body()
-            if body and len(body) > 10000:
+            if body and len(body) > 50000:
                 with open(output_path, "wb") as f:
                     f.write(body)
                 result["size"] = len(body)
-                logger.info("下载完成: %.1f MB (%s)", len(body) / 1048576, url[:80])
-            route.continue_()
-        except Exception as e:
-            logger.debug("route 尝试: %s - %s", url[:60], e)
-            route.continue_()
+                logger.info("下载完成: %.1f MB (type=%s url=%s)", len(body) / 1048576, rtype, url[:80])
+        except Exception:
+            pass
+        route.continue_()
 
     page.route("**/*", _handle_route)
 
@@ -367,12 +372,13 @@ def download_video(fetcher, video_id, output_path):
                   wait_until="domcontentloaded", timeout=30000)
         try:
             page.wait_for_selector("video", timeout=15000)
-            page.wait_for_timeout(10000)
+            page.evaluate("document.querySelector('video')?.play()")
+            page.wait_for_timeout(8000)
         except Exception:
-            pass
+            page.wait_for_timeout(8000)
 
         if not result:
-            raise RuntimeError("未捕获到视频媒体请求")
+            _try_download_via_js(page, output_path, result)
     finally:
         try:
             page.unroute("**/*")
@@ -382,6 +388,42 @@ def download_video(fetcher, video_id, output_path):
             page.close()
         except Exception:
             pass
+
+    if not result:
+        raise RuntimeError("视频下载失败，请改用 CLI: python monitor.py transcribe")
+
+
+def _try_download_via_js(page, output_path: str, result: dict):
+    """JS 回退：用 fetch 下载 CDN URL。"""
+    import base64
+    r = page.evaluate("""
+        async () => {
+            const v = document.querySelector('video');
+            if (!v) return {error: 'no video'};
+            const src = v.getAttribute('src') ||
+                        (v.querySelector('source') || {}).getAttribute('src') ||
+                        v.currentSrc || v.src || null;
+            if (!src) return {error: 'no src'};
+            if (src.startsWith('blob:')) return {error: 'blob_url'};
+            try {
+                const resp = await fetch(src);
+                if (!resp.ok) return {error: 'HTTP ' + resp.status};
+                const buf = await resp.arrayBuffer();
+                const bytes = new Uint8Array(buf);
+                let bin = '';
+                for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+                return {data: btoa(bin), size: bytes.length};
+            } catch(e) { return {error: e.message}; }
+        }
+    """)
+    if r.get("data"):
+        data = base64.b64decode(r["data"])
+        with open(output_path, "wb") as f:
+            f.write(data)
+        result["size"] = len(data)
+        logger.info("JS 下载完成: %.1f MB", len(data) / 1048576)
+    else:
+        logger.warning("JS 回退失败: %s", r.get("error"))
 
 
 # ─── 完整流水线 ─────────────────────────────────────────────
