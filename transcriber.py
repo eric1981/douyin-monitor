@@ -334,85 +334,54 @@ class VideoFetcher:
 # ─── 下载 ────────────────────────────────────────────────────
 
 def download_video(fetcher, video_id, output_path):
-    """下载抖音视频。HTTP 直下，blob: 用浏览器 fetch 一次，失败提示 CLI。"""
+    """下载抖音视频：网络拦截捕获视频媒体响应。"""
     page = fetcher._context.new_page()
+    result = {}
+
+    def _handle_route(route):
+        if result:
+            route.continue_()
+            return
+        rtype = route.request.resource_type
+        url = route.request.url
+        if rtype != "media" and not any(k in url for k in (".mp4?", "/play/", "/download/")):
+            route.continue_()
+            return
+        try:
+            resp = route.fetch()
+            body = resp.body()
+            if body and len(body) > 10000:
+                with open(output_path, "wb") as f:
+                    f.write(body)
+                result["size"] = len(body)
+                logger.info("下载完成: %.1f MB (%s)", len(body) / 1048576, url[:80])
+            route.continue_()
+        except Exception as e:
+            logger.debug("route 尝试: %s - %s", url[:60], e)
+            route.continue_()
+
+    page.route("**/*", _handle_route)
+
     try:
         page.goto(f"https://www.douyin.com/video/{video_id}",
                   wait_until="domcontentloaded", timeout=30000)
         try:
             page.wait_for_selector("video", timeout=15000)
-            page.wait_for_timeout(6000)
+            page.wait_for_timeout(10000)
         except Exception:
             pass
 
-        video_url = page.evaluate("""
-            () => {
-                const v = document.querySelector('video');
-                if (!v) return null;
-                return v.currentSrc || v.getAttribute('src') ||
-                       (v.querySelector('source') || {}).getAttribute('src') || null;
-            }
-        """)
-
-        if not video_url:
-            raise RuntimeError("未找到 video 元素，请改用 CLI: python monitor.py transcribe")
-
-        logger.info("视频地址: %s...", video_url[:80])
-
-        if video_url.startswith("blob:"):
-            _download_blob(page, video_url, output_path)
-            return
-        else:
-            _download_http(video_url, output_path)
-            return
+        if not result:
+            raise RuntimeError("未捕获到视频媒体请求")
     finally:
+        try:
+            page.unroute("**/*")
+        except Exception:
+            pass
         try:
             page.close()
         except Exception:
             pass
-
-
-def _download_http(video_url: str, output_path: str):
-    """requests 流式下载 HTTP/HTTPS 视频。"""
-    import requests as _req
-    headers = {"User-Agent": "Mozilla/5.0 Chrome/120", "Referer": "https://www.douyin.com/"}
-    resp = _req.get(video_url, headers=headers, stream=True, timeout=120)
-    resp.raise_for_status()
-    expected = int(resp.headers.get("content-length", 0))
-    n = 0
-    with open(output_path, "wb") as f:
-        for c in resp.iter_content(65536):
-            f.write(c)
-            n += len(c)
-    if expected and n < expected * 0.95:
-        raise RuntimeError(f"下载不完整: {n/1048576:.1f}/{expected/1048576:.1f} MB")
-    logger.info("下载完成: %.1f MB", n / 1048576)
-
-
-def _download_blob(page, blob_url: str, output_path: str):
-    """通过浏览器 fetch blob URL（单次，不重载页面）。"""
-    import base64
-    result = page.evaluate("""
-        async (url) => {
-            try {
-                const resp = await fetch(url);
-                if (!resp.ok) return {error: 'HTTP ' + resp.status};
-                const buf = await resp.arrayBuffer();
-                const bytes = new Uint8Array(buf);
-                let bin = '';
-                for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-                return {data: btoa(bin), size: bytes.length};
-            } catch(e) { return {error: e.message}; }
-        }
-    """, blob_url)
-    if result.get("error"):
-        raise RuntimeError(
-            f"blob 下载失败: {result['error']}，请改用 CLI: python monitor.py transcribe"
-        )
-    data = base64.b64decode(result["data"])
-    with open(output_path, "wb") as f:
-        f.write(data)
-    logger.info("blob 下载完成: %.1f MB", len(data) / 1048576)
 
 
 # ─── 完整流水线 ─────────────────────────────────────────────
