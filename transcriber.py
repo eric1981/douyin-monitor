@@ -334,10 +334,47 @@ class VideoFetcher:
 # ─── 下载 ────────────────────────────────────────────────────
 
 def download_video(fetcher, video_id, output_path):
-    """下载抖音视频：Playwright 获取 CDN 链接 → requests 流式下载"""
-    video_url = fetcher.fetch_url(video_id)
+    """下载抖音视频：直接通过浏览器页面获取并下载。"""
+    page = fetcher._context.new_page()
+    try:
+        page.goto(f"https://www.douyin.com/video/{video_id}",
+                  wait_until="domcontentloaded", timeout=30000)
+        try:
+            page.wait_for_selector("video", timeout=15000)
+            page.wait_for_timeout(5000)
+        except Exception:
+            pass
+
+        # 尝试获取 video 元素 src（可能是 http 或 blob）
+        video_url = page.evaluate("""
+            () => {
+                const v = document.querySelector('video');
+                if (!v) return null;
+                return v.getAttribute('src') || (v.querySelector('source') || {}).getAttribute('src') || null;
+            }
+        """)
+
+        if not video_url:
+            raise RuntimeError("未获取到视频地址")
+
+        logger.info("视频地址: %s...", video_url[:80])
+
+        if video_url.startswith("blob:"):
+            _download_blob(page, video_url, output_path)
+        else:
+            _download_http(video_url, output_path)
+    finally:
+        try:
+            page.close()
+        except Exception:
+            pass
+
+
+def _download_http(video_url: str, output_path: str):
+    """requests 流式下载 HTTP/HTTPS 视频。"""
+    import requests as _req
     headers = {"User-Agent": "Mozilla/5.0 Chrome/120", "Referer": "https://www.douyin.com/"}
-    resp = requests.get(video_url, headers=headers, stream=True, timeout=120)
+    resp = _req.get(video_url, headers=headers, stream=True, timeout=120)
     resp.raise_for_status()
     expected = int(resp.headers.get("content-length", 0))
     n = 0
@@ -348,7 +385,43 @@ def download_video(fetcher, video_id, output_path):
     if expected and n < expected * 0.95:
         raise RuntimeError(f"下载不完整: {n/1048576:.1f}/{expected/1048576:.1f} MB")
     logger.info("下载完成: %.1f MB", n / 1048576)
-    return str(output_path)
+
+
+def _download_blob(page, blob_url: str, output_path: str):
+    """通过浏览器 fetch blob URL 并写入文件（带重试）。"""
+    import base64
+    retries = 3
+    for attempt in range(retries):
+        result = page.evaluate("""
+            async (url) => {
+                try {
+                    const resp = await fetch(url);
+                    if (!resp.ok) return {error: 'HTTP ' + resp.status};
+                    const buf = await resp.arrayBuffer();
+                    const bytes = new Uint8Array(buf);
+                    let bin = '';
+                    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+                    return {data: btoa(bin), size: bytes.length};
+                } catch(e) { return {error: e.message}; }
+            }
+        """, blob_url)
+        if result.get("error"):
+            logger.warning("blob 下载尝试 %d/%d 失败: %s", attempt + 1, retries, result["error"])
+            if attempt < retries - 1:
+                page.wait_for_timeout(3000)
+                page.reload(wait_until="domcontentloaded")
+                try:
+                    page.wait_for_selector("video", timeout=15000)
+                    page.wait_for_timeout(5000)
+                except Exception:
+                    pass
+            continue
+        data = base64.b64decode(result["data"])
+        with open(output_path, "wb") as f:
+            f.write(data)
+        logger.info("blob 下载完成: %.1f MB", len(data) / 1048576)
+        return
+    raise RuntimeError(f"blob 下载失败（重试 {retries} 次）")
 
 
 # ─── 完整流水线 ─────────────────────────────────────────────

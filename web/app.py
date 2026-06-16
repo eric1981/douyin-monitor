@@ -1,5 +1,6 @@
 """抖音博主监控 - Web 前端 (FastAPI)"""
 import asyncio
+import concurrent.futures
 import sys
 import logging
 from contextlib import asynccontextmanager
