@@ -334,79 +334,65 @@ class VideoFetcher:
 # ─── 下载 ────────────────────────────────────────────────────
 
 def download_video(fetcher, video_id, output_path):
-    """下载抖音视频：page.route 拦截视频请求获取完整响应体。"""
+    """下载抖音视频：从 video 元素取 CDN URL → requests 下载"""
     page = fetcher._context.new_page()
-    result = {}
-
-    def _handle_route(route):
-        url = route.request.url
-        rtype = route.request.resource_type
-        if result:
-            route.continue_()
-            return
-        # 只拦截可能是视频的请求
-        is_video_like = (
-            rtype in ("media", "fetch", "xhr", "other") or
-            any(k in url for k in (".mp4", ".m4s", ".ts", "video", "bytegecko", "play/"))
-        )
-        if not is_video_like:
-            route.continue_()
-            return
-        logger.info("[video-candidate] type=%s url=%s", rtype, url[:120])
-        try:
-            resp = route.fetch()
-            body = resp.body()
-            if body and len(body) > 50000:
-                with open(output_path, "wb") as f:
-                    f.write(body)
-                result["size"] = len(body)
-                logger.info("下载完成: %.1f MB (type=%s url=%s)", len(body) / 1048576, rtype, url[:80])
-        except Exception:
-            pass
-        route.continue_()
-
-    page.route("**/*", _handle_route)
-
     try:
         page.goto(f"https://www.douyin.com/video/{video_id}",
                   wait_until="domcontentloaded", timeout=30000)
         try:
             page.wait_for_selector("video", timeout=15000)
-            page.evaluate("document.querySelector('video')?.play()")
-            page.wait_for_timeout(8000)
-        except Exception:
-            page.wait_for_timeout(8000)
-
-        if not result:
-            _try_download_via_js(page, output_path, result)
-    finally:
-        try:
-            page.unroute("**/*")
+            page.wait_for_timeout(3000)
         except Exception:
             pass
+
+        # 取原始 CDN src（getAttribute 不受 MSE 篡改影响）
+        src = page.evaluate("""
+            () => {
+                const v = document.querySelector('video');
+                if (!v) return null;
+                return v.getAttribute('src') ||
+                       (v.querySelector('source') || {}).getAttribute('src') ||
+                       null;
+            }
+        """)
+
+        if not src:
+            raise RuntimeError("未找到视频 CDN 地址")
+
+        logger.info("视频 CDN: %s...", src[:80])
+
+        if src.startswith("blob:"):
+            _download_blob(page, src, output_path)
+        else:
+            _download_http(src, output_path)
+    finally:
         try:
             page.close()
         except Exception:
             pass
 
-    if not result:
-        raise RuntimeError("视频下载失败，请改用 CLI: python monitor.py transcribe")
+
+def _download_http(url: str, output_path: str):
+    headers = {"User-Agent": "Mozilla/5.0 Chrome/120", "Referer": "https://www.douyin.com/"}
+    resp = requests.get(url, headers=headers, stream=True, timeout=120)
+    resp.raise_for_status()
+    expected = int(resp.headers.get("content-length", 0))
+    n = 0
+    with open(output_path, "wb") as f:
+        for c in resp.iter_content(65536):
+            f.write(c)
+            n += len(c)
+    if expected and n < expected * 0.95:
+        raise RuntimeError(f"下载不完整: {n/1048576:.1f}/{expected/1048576:.1f} MB")
+    logger.info("下载完成: %.1f MB", n / 1048576)
 
 
-def _try_download_via_js(page, output_path: str, result: dict):
-    """JS 回退：用 fetch 下载 CDN URL。"""
+def _download_blob(page, blob_url: str, output_path: str):
     import base64
     r = page.evaluate("""
-        async () => {
-            const v = document.querySelector('video');
-            if (!v) return {error: 'no video'};
-            const src = v.getAttribute('src') ||
-                        (v.querySelector('source') || {}).getAttribute('src') ||
-                        v.currentSrc || v.src || null;
-            if (!src) return {error: 'no src'};
-            if (src.startsWith('blob:')) return {error: 'blob_url'};
+        async (url) => {
             try {
-                const resp = await fetch(src);
+                const resp = await fetch(url);
                 if (!resp.ok) return {error: 'HTTP ' + resp.status};
                 const buf = await resp.arrayBuffer();
                 const bytes = new Uint8Array(buf);
@@ -415,15 +401,13 @@ def _try_download_via_js(page, output_path: str, result: dict):
                 return {data: btoa(bin), size: bytes.length};
             } catch(e) { return {error: e.message}; }
         }
-    """)
-    if r.get("data"):
-        data = base64.b64decode(r["data"])
-        with open(output_path, "wb") as f:
-            f.write(data)
-        result["size"] = len(data)
-        logger.info("JS 下载完成: %.1f MB", len(data) / 1048576)
-    else:
-        logger.warning("JS 回退失败: %s", r.get("error"))
+    """, blob_url)
+    if r.get("error"):
+        raise RuntimeError(f"blob 下载失败: {r['error']}")
+    data = base64.b64decode(r["data"])
+    with open(output_path, "wb") as f:
+        f.write(data)
+    logger.info("blob 下载完成: %.1f MB", len(data) / 1048576)
 
 
 # ─── 完整流水线 ─────────────────────────────────────────────
