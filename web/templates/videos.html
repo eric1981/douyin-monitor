@@ -3,21 +3,25 @@
 <h1>视频列表</h1>
 
 <div class="toolbar">
-    <form method="get">
+    <form method="get" style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;">
+        <span style="font-size:13px;color:var(--text-secondary);white-space:nowrap;">筛选：</span>
         <select name="creator_id">
             <option value="">全部博主</option>
             {% for c in creators %}
             <option value="{{ c.id }}" {% if selected_creator==c.id|string %}selected{% endif %}>{{ c.name }}</option>
             {% endfor %}
         </select>
-        <input type="text" name="search" placeholder="搜索标题..." value="{{ search }}" style="width:200px">
-        <select name="sort">
-            <option value="likes" {% if sort=='likes' %}selected{% endif %}>按点赞</option>
-            <option value="comments" {% if sort=='comments' %}selected{% endif %}>按评论</option>
-            <option value="shares" {% if sort=='shares' %}selected{% endif %}>按分享</option>
-            <option value="time" {% if sort=='time' %}selected{% endif %}>按时间</option>
+        <input type="text" name="search" placeholder="搜索标题..." value="{{ search }}" style="width:180px">
+        <input type="hidden" name="sort" value="{{ sort }}">
+        <button class="btn btn-secondary btn-sm">🔍 筛选</button>
+
+        <span style="margin-left:16px;font-size:13px;color:var(--text-secondary);white-space:nowrap;">排序：</span>
+        <select name="sort" onchange="this.form.submit()">
+            <option value="likes" {% if sort=='likes' %}selected{% endif %}>👍 按点赞</option>
+            <option value="comments" {% if sort=='comments' %}selected{% endif %}>💬 按评论</option>
+            <option value="shares" {% if sort=='shares' %}selected{% endif %}>↗ 按分享</option>
+            <option value="time" {% if sort=='time' %}selected{% endif %}>🕐 按时间（最新）</option>
         </select>
-        <button class="btn btn-secondary btn-sm">筛选</button>
     </form>
 </div>
 

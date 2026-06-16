@@ -126,8 +126,8 @@ async def creators_page(request: Request):
 
 
 @app.get("/videos", response_class=HTMLResponse)
-async def videos_page(request: Request, creator_id: int = Query(None),
-                      search: str = Query(None), sort: str = Query("likes"),
+async def videos_page(request: Request, creator_id: int | None = Query(None),
+                      search: str | None = Query(None), sort: str = Query("likes"),
                       page: int = Query(1)):
     # 校验排序参数（白名单），防止 SQL 注入
     SORT_MAP = {
