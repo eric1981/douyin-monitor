@@ -126,9 +126,10 @@ async def creators_page(request: Request):
 
 
 @app.get("/videos", response_class=HTMLResponse)
-async def videos_page(request: Request, creator_id: int | None = Query(None),
+async def videos_page(request: Request, creator_id: str = Query(""),
                       search: str | None = Query(None), sort: str = Query("likes"),
                       page: int = Query(1)):
+    cid_int = int(creator_id) if creator_id.strip() else None
     # 校验排序参数（白名单），防止 SQL 注入
     SORT_MAP = {
         "likes": "s.like_count DESC",
@@ -143,10 +144,10 @@ async def videos_page(request: Request, creator_id: int | None = Query(None),
     creator = None
     conditions = []
     params = []
-    if creator_id:
+    if cid_int:
         conditions.append("v.creator_id = ?")
-        params.append(creator_id)
-        creator = get_creator(str(creator_id))
+        params.append(cid_int)
+        creator = get_creator(str(cid_int))
     if search:
         conditions.append("v.title LIKE ?")
         params.append(f"%{search}%")
@@ -184,7 +185,7 @@ async def videos_page(request: Request, creator_id: int | None = Query(None),
     return render("videos.html", videos=videos, creator=creator,
                   creators=list_creators(), search=search or "", sort=sort,
                   page=page, total_pages=(total + 19) // 20, total=total,
-                  selected_creator=str(creator_id or ""))
+                  selected_creator=str(cid_int or ""))
 
 
 @app.get("/video/{video_db_id}", response_class=HTMLResponse)
