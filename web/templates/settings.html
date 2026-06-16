@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+{% block content %}
+
+{% set c = config %}
+<h1>⚙️ 系统配置</h1>
+<p style="color:var(--text-secondary);font-size:13px;margin-bottom:16px;">
+  修改后自动保存到 config.yaml，立即生效（部分需重启）
+</p>
+
+<form id="settings-form" style="display:flex;flex-direction:column;gap:24px;">
+
+  <!-- 抓取设置 -->
+  <fieldset style="border:1px solid var(--border);border-radius:8px;padding:16px;">
+    <legend style="font-weight:600;padding:0 8px;">🕷️ 抓取配置</legend>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+      <label>最大滚动次数 <input type="number" name="spider.max_scrolls" value="{{ c['spider']['max_scrolls'] }}" min="1"></label>
+      <label>滚动闲置检测次数 <input type="number" name="spider.scroll_idle_limit" value="{{ c['spider']['scroll_idle_limit'] }}" min="1"></label>
+      <label>页面加载等待(秒) <input type="number" name="spider.page_load_wait" value="{{ c['spider']['page_load_wait'] }}" min="1"></label>
+      <label>窗口宽度 <input type="number" name="spider.viewport_width" value="{{ c['spider']['viewport_width'] }}"></label>
+      <label>窗口高度 <input type="number" name="spider.viewport_height" value="{{ c['spider']['viewport_height'] }}"></label>
+      <label>Headless 模式 <select name="spider.headless">{% if c['spider']['headless'] %}<option value="true" selected>是</option><option value="false">否</option>{% else %}<option value="true">是</option><option value="false" selected>否</option>{% endif %}</select></label>
+    </div>
+  </fieldset>
+
+  <!-- 评论抓取 -->
+  <fieldset style="border:1px solid var(--border);border-radius:8px;padding:16px;">
+    <legend style="font-weight:600;padding:0 8px;">💬 评论抓取</legend>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+      <label>每批视频上限 <input type="number" name="comments.video_limit" value="{{ c['comments']['video_limit'] }}" min="1"></label>
+      <label>每视频最多翻页 <input type="number" name="comments.pages" value="{{ c['comments']['pages'] }}" min="1"></label>
+      <label>每视频累计上限 <input type="number" name="comments.comment_limit" value="{{ c['comments']['comment_limit'] }}" min="1"></label>
+      <label>每页拉取数 <input type="number" name="comments.page_count" value="{{ c['comments']['page_count'] }}" min="1"></label>
+      <label>视频间延迟(最小秒) <input type="number" name="comments.inter_video_delay_min" value="{{ c['comments']['inter_video_delay_min'] }}" min="0"></label>
+      <label>视频间延迟(最大秒) <input type="number" name="comments.inter_video_delay_max" value="{{ c['comments']['inter_video_delay_max'] }}" min="0"></label>
+      <label>过滤-最低点赞数 <input type="number" name="comments.filter_digg_min" value="{{ c['comments']['filter_digg_min'] }}" min="0"></label>
+      <label>过滤-最低回复数 <input type="number" name="comments.filter_reply_min" value="{{ c['comments']['filter_reply_min'] }}" min="0"></label>
+    </div>
+  </fieldset>
+
+  <!-- 转录设置 -->
+  <fieldset style="border:1px solid var(--border);border-radius:8px;padding:16px;">
+    <legend style="font-weight:600;padding:0 8px;">🎙️ 转录配置</legend>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+      <label>Whisper 模型 <select name="transcriber.model">
+        {% set m = c['transcriber']['model'] %}
+        <option value="tiny" {% if m=='tiny' %}selected{% endif %}>tiny</option>
+        <option value="small" {% if m=='small' %}selected{% endif %}>small</option>
+        <option value="medium" {% if m=='medium' %}selected{% endif %}>medium</option>
+        <option value="large-v3" {% if m=='large-v3' %}selected{% endif %}>large-v3</option>
+      </select></label>
+      <label>设备 <select name="transcriber.device">
+        {% set d = c['transcriber']['device'] %}
+        <option value="cpu" {% if d=='cpu' %}selected{% endif %}>CPU</option>
+        <option value="cuda" {% if d=='cuda' %}selected{% endif %}>CUDA (GPU)</option>
+      </select></label>
+      <label>语言 <select name="transcriber.language">
+        {% set l = c['transcriber']['language'] %}
+        <option value="zh" {% if l=='zh' %}selected{% endif %}>中文</option>
+        <option value="en" {% if l=='en' %}selected{% endif %}>English</option>
+        <option value="auto" {% if l=='auto' %}selected{% endif %}>自动</option>
+      </select></label>
+      <label>Beam Size <input type="number" name="transcriber.beam_size" value="{{ c['transcriber']['beam_size'] }}" min="1" max="10"></label>
+    </div>
+  </fieldset>
+
+  <!-- Web 面板 -->
+  <fieldset style="border:1px solid var(--border);border-radius:8px;padding:16px;">
+    <legend style="font-weight:600;padding:0 8px;">🌐 Web 面板</legend>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+      <label>监听地址 <input type="text" name="web.host" value="{{ c['web']['host'] }}"></label>
+      <label>端口 <input type="number" name="web.port" value="{{ c['web']['port'] }}"></label>
+      <label>每页视频数 <input type="number" name="web.videos_per_page" value="{{ c['web']['videos_per_page'] }}" min="5" max="100"></label>
+      <label>新鲜阈值(小时) <input type="number" name="web.fresh_threshold_hours" value="{{ c['web']['fresh_threshold_hours'] }}"></label>
+    </div>
+  </fieldset>
+
+  <!-- 调度 -->
+  <fieldset style="border:1px solid var(--border);border-radius:8px;padding:16px;">
+    <legend style="font-weight:600;padding:0 8px;">⏰ 定时任务</legend>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+      <label>每日定时 <input type="time" name="schedule.daily_at" value="{{ c['schedule']['daily_at'] }}"></label>
+      <label>间隔(分钟) <input type="number" name="schedule.interval_minutes" value="{{ c['schedule']['interval_minutes'] }}" min="0"></label>
+      <label>抖动(分钟) <input type="number" name="schedule.jitter_minutes" value="{{ c['schedule']['jitter_minutes'] }}" min="0"></label>
+    </div>
+  </fieldset>
+
+  <div style="display:flex;gap:8px;align-items:center;">
+    <button type="submit" class="btn btn-primary" id="save-btn">💾 保存配置</button>
+    <span id="status" style="font-size:13px;color:var(--text-secondary);"></span>
+  </div>
+</form>
+
+<script>
+document.getElementById('settings-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  var btn = document.getElementById('save-btn');
+  var status = document.getElementById('status');
+  btn.disabled = true;
+  status.textContent = '⏳ 保存中...';
+  var fd = new FormData(e.target);
+  var data = {};
+  for (var [k, v] of fd.entries()) {
+    var keys = k.split('.');
+    var obj = data;
+    for (var i = 0; i < keys.length - 1; i++) {
+      obj = obj[keys[i]] = obj[keys[i]] || {};
+    }
+    if (v === 'true' || v === 'false') v = v === 'true';
+    else if (!isNaN(v) && v !== '') v = Number(v);
+    obj[keys[keys.length-1]] = v;
+  }
+  try {
+    var resp = await fetch('/api/config', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) });
+    if (resp.ok) status.textContent = '✅ 已保存';
+    else status.textContent = '❌ 保存失败';
+  } catch(e) {
+    status.textContent = '❌ ' + e;
+  }
+  btn.disabled = false;
+});
+</script>
+
+{% endblock %}

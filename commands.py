@@ -507,10 +507,12 @@ def cmd_comments(args: list[str]):
     """抓取评论区数据。"""
     import asyncio
 
+    from config_manager import load_config
+    cm_cfg = load_config()["comments"]
     creator_arg = None
-    video_limit = 50
-    pages = 3
-    comment_limit = 30
+    video_limit = cm_cfg["video_limit"]
+    pages = cm_cfg["pages"]
+    comment_limit = cm_cfg["comment_limit"]
 
     i = 0
     while i < len(args):
@@ -599,7 +601,7 @@ def cmd_comments(args: list[str]):
 
         # 视频间间隔，降低风控概率
         if idx < len(all_videos) - 1:
-            delay = random.uniform(3, 6)
+            delay = random.uniform(cm_cfg["inter_video_delay_min"], cm_cfg["inter_video_delay_max"])
             logger.info("  等待 %.1fs 避免风控...", delay)
             time.sleep(delay)
 

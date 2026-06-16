@@ -62,12 +62,15 @@ class DouyinSpider:
         "/aweme/v1/web/im/user/info/",
     ]
 
-    def __init__(self, headless: bool = True, max_scrolls: int = 80,
-                 page_load_wait: int = 8, idle_limit: int = 20):
-        self.headless = headless
-        self.max_scrolls = max_scrolls
-        self.page_load_wait = page_load_wait
-        self.idle_limit = idle_limit
+    def __init__(self, headless: bool | None = None, max_scrolls: int | None = None,
+                 page_load_wait: int | None = None, idle_limit: int | None = None):
+        from config_manager import load_config
+        cfg = load_config()
+        s = cfg["spider"]
+        self.headless = headless if headless is not None else s["headless"]
+        self.max_scrolls = max_scrolls if max_scrolls is not None else s["max_scrolls"]
+        self.page_load_wait = page_load_wait if page_load_wait is not None else s["page_load_wait"]
+        self.idle_limit = idle_limit if idle_limit is not None else s["scroll_idle_limit"]
         self.videos: list[Video] = []
         self.profile: Profile | None = None
         self._seen_ids: set[str] = set()
@@ -207,17 +210,16 @@ class DouyinSpider:
         self._error = None
 
         async with async_playwright() as p:
+            from config_manager import load_config
+            cfg = load_config()
+            s = cfg["spider"]
             SESSION_DIR.mkdir(parents=True, exist_ok=True)
             context = await p.chromium.launch_persistent_context(
                 user_data_dir=str(SESSION_DIR),
                 headless=self.headless,
-                viewport={"width": 1920, "height": 1080},
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/120.0.0.0 Safari/537.36"
-                ),
-                locale="zh-CN",
+                viewport={"width": s["viewport_width"], "height": s["viewport_height"]},
+                user_agent=s["user_agent"],
+                locale=s["locale"],
             )
             page = await context.new_page()
             page.on("response", self._on_response)

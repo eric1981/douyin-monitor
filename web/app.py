@@ -125,6 +125,13 @@ async def creators_page(request: Request):
     return render("creators.html", creators=list_creators())
 
 
+@app.get("/settings", response_class=HTMLResponse)
+def settings_page(request: Request):
+    """系统配置管理页面。"""
+    from config_manager import load_config
+    return render("settings.html", config=load_config())
+
+
 @app.get("/videos", response_class=HTMLResponse)
 async def videos_page(request: Request, creator_id: str = Query(""),
                       search: str | None = Query(None), sort: str = Query("likes"),
@@ -507,6 +514,50 @@ async def api_stats():
         """).fetchone()["total_likes"]
 
     return {"total_creators": tc, "total_videos": tv, "total_snapshots": ts, "total_likes": tl}
+
+
+# ─── 配置 API ─────────────────────────────────────────────
+
+@app.get("/api/config")
+def api_get_config():
+    """返回全部配置（JSON）。"""
+    from config_manager import load_config
+    return load_config()
+
+
+@app.post("/api/config")
+def api_save_config(data: dict):
+    """保存配置到 config.yaml。"""
+    from config_manager import save_config, load_config
+
+    def _coerce(v):
+        """将字符串值转为正确类型（bool/int/float/str）。"""
+        if isinstance(v, str):
+            if v.lower() == "true":
+                return True
+            if v.lower() == "false":
+                return False
+            try:
+                return int(v)
+            except (ValueError, TypeError):
+                pass
+            try:
+                return float(v)
+            except (ValueError, TypeError):
+                pass
+        return v
+
+    def _coerce_dict(d: dict) -> dict:
+        return {k: _coerce_dict(v) if isinstance(v, dict) else _coerce(v) for k, v in d.items()}
+
+    current = load_config()
+    coerced = _coerce_dict(data)
+    for section in coerced:
+        if section in current and isinstance(current[section], dict):
+            current[section].update(coerced[section])
+
+    save_config(current)
+    return {"status": "ok"}
 
 
 # ─── 评论 API ─────────────────────────────────────────────

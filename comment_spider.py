@@ -10,15 +10,19 @@ from playwright.async_api import async_playwright
 logger = logging.getLogger(__name__)
 
 COMMENT_API_PATTERN = re.compile(r"/aweme/v1/web/comment/list/")
-PAGE_COUNT = 20
-SESSION_DIR = Path(__file__).parent / "douyin_session"
 
 
 class CommentSpider:
     """评论区采集器。复用 DouyinSpider 的持久化浏览器会话。"""
 
-    def __init__(self, headless: bool = True):
-        self.headless = headless
+    def __init__(self, headless: bool | None = None):
+        from config_manager import load_config, get
+        cfg = load_config()
+        self.headless = headless if headless is not None else cfg["spider"]["headless"]
+        self.page_count = cfg["comments"]["page_count"]
+        self.filter_digg_min = cfg["comments"]["filter_digg_min"]
+        self.filter_reply_min = cfg["comments"]["filter_reply_min"]
+        self.session_dir = Path(get("paths.session_dir", str(Path(__file__).parent / "douyin_session")))
 
     async def fetch_comments(
         self, video_id: str, max_pages: int = 3, max_total: int = 30
@@ -37,17 +41,16 @@ class CommentSpider:
 
         async with async_playwright() as p:
             logger.info("  playwright 上下文已创建")
-            SESSION_DIR.mkdir(parents=True, exist_ok=True)
+            from config_manager import load_config
+            cfg = load_config()
+            s = cfg["spider"]
+            self.session_dir.mkdir(parents=True, exist_ok=True)
             context = await p.chromium.launch_persistent_context(
-                user_data_dir=str(SESSION_DIR),
+                user_data_dir=str(self.session_dir),
                 headless=self.headless,
-                viewport={"width": 1280, "height": 720},
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/125.0.0.0 Safari/537.36"
-                ),
-                locale="zh-CN",
+                viewport={"width": s["viewport_width"], "height": s["viewport_height"]},
+                user_agent=s["user_agent"],
+                locale=s["locale"],
             )
             page = context.pages[0] if context.pages else await context.new_page()
 
@@ -103,7 +106,7 @@ class CommentSpider:
                 if has_more and len(comments) < max_total and page_count < max_pages:
                     await page.wait_for_timeout(random.randint(800, 1500))
                     fetched = await self._fetch_via_page(
-                        page, video_id, cursor, PAGE_COUNT
+                        page, video_id, cursor, self.page_count
                     )
                     if fetched and "comments" in fetched:
                         collected.append(fetched)
@@ -179,7 +182,6 @@ class CommentSpider:
             })
         return results
 
-    @staticmethod
-    def _pass_filter(c: dict) -> bool:
-        """过滤规则：digg_count > 0 AND reply_count > 0"""
-        return c["digg_count"] > 0 and c["reply_count"] > 0
+    def _pass_filter(self, c: dict) -> bool:
+        """过滤规则：digg_count >= N AND reply_count >= N（可配置）"""
+        return c["digg_count"] >= self.filter_digg_min and c["reply_count"] >= self.filter_reply_min
