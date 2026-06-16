@@ -185,6 +185,7 @@ async function changeModel() {
 async function transcribeThis(videoDbId) {
     const btn = document.getElementById('transcribe-btn');
     const status = document.getElementById('transcribe-status');
+    const emptyState = btn.closest('.empty-state');
     btn.disabled = true;
     status.textContent = '⏳ 正在转录，请耐心等待...';
     try {
@@ -194,8 +195,19 @@ async function transcribeThis(videoDbId) {
             status.textContent = '❌ ' + data.error;
             btn.disabled = false;
         } else {
-            status.textContent = '✅ 转录完成，刷新页面查看';
+            status.textContent = '✅ 转录完成';
             btn.style.display = 'none';
+            // 直接用返回数据渲染文案，无需刷新
+            if (emptyState && data.full_text) {
+                var segsHtml = '';
+                if (data.segments && data.segments.length) {
+                    var segRows = data.segments.map(function(s) {
+                        return '<div class="segment-row"><span class="seg-time">' + s.start.toFixed(1) + 's</span><span class="seg-text">' + esc(s.text) + '</span></div>';
+                    }).join('');
+                    segsHtml = '<details class="transcript-segments"><summary>📋 逐段时间轴（' + data.segments.length + ' 段）</summary><div class="segment-list">' + segRows + '</div></details>';
+                }
+                emptyState.outerHTML = '<div class="detail-transcript"><h2>📝 视频文案（语音识别）</h2><div class="transcript-full">' + esc(data.full_text) + '</div>' + segsHtml + '</div>';
+            }
         }
     } catch(e) {
         status.textContent = '❌ ' + e;

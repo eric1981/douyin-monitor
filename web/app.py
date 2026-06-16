@@ -368,7 +368,11 @@ async def api_transcribe_video(video_db_id: int):
     # 已转录则直接返回
     existing = get_transcript(video_db_id)
     if existing:
-        return {"status": "already_done", "full_text": existing.get("full_text", "")}
+        return {
+            "status": "already_done",
+            "full_text": existing.get("full_text", ""),
+            "segments": existing.get("segments", []),
+        }
 
     video_id = row["video_id"]
 
@@ -381,7 +385,11 @@ async def api_transcribe_video(video_db_id: int):
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             result = await asyncio.get_running_loop().run_in_executor(pool, _do_transcribe)
         if result:
-            return {"status": "ok", "full_text": result.get("full_text", "")}
+            return {
+                "status": "ok",
+                "full_text": result.get("full_text", ""),
+                "segments": result.get("segments", []),
+            }
         else:
             return {"status": "skipped", "message": "已转录或下载失败"}
     except Exception as e:
